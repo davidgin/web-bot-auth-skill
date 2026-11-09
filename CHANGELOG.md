@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Development environment now uses uv (`pyproject.toml`, `uv.lock`). CI runs through uv. The shipped skill is unchanged.
+
 ## 0.1.1
 
 ### Security

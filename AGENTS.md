@@ -8,12 +8,14 @@ Extends `~/.agents/AGENTS.md`; everything there applies unless overridden here.
   stay one vendorable file whose only dependency is `cryptography`, so it cannot
   be split into modules. All other source files keep the global 1,000-line limit;
   functions stay at 50 lines or fewer. Tests are not counted.
-- The gate is `python scripts/check_size.py`, run in CI, with its baseline in
+- The gate is `uv run python scripts/check_size.py`, run in CI, with its baseline in
   `scripts/size_baseline.json`. The baseline lists known oversized functions
   and may only shrink; a new or growing offender fails.
 
 ## Conventions
 
+- Dev environment is uv (`uv sync`); run tests and tools with `uv run`, e.g.
+  `cd web-bot-auth/scripts && uv run python -m unittest test_web_bot_auth`.
 - Every `.py` file starts with `# SPDX-License-Identifier: Apache-2.0`.
 - A behaviour change needs a failing test first and regenerated vectors
   (`web-bot-auth/scripts/generate_vectors.py`).
