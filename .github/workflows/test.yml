@@ -23,3 +23,8 @@ jobs:
       - run: pip install cryptography
       - run: python -m unittest -v test_web_bot_auth
         working-directory: web-bot-auth/scripts
+      - run: python scripts/check_size.py
+        if: matrix.python == '3.13'
+      - run: python -m unittest -v test_check_size
+        working-directory: scripts
+        if: matrix.python == '3.13'
