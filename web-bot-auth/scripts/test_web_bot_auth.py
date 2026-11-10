@@ -3,6 +3,7 @@
 
 import base64
 import dataclasses
+import functools
 import json
 import threading
 import unittest
@@ -612,7 +613,7 @@ class DirectoryUnavailable(Fixture):
 
 
 class ResolverExtensionPoints(Fixture):
-    """The optional DirectoryKeyResolver.lookup must never bypass a custom resolve()."""
+    """Key and trust come only from resolve(); directory_unavailable() only picks the failure kind."""
 
     def directory(self):
         return DirectoryKeyResolver([AGENT], fetch=lambda url: (json.dumps(self.jwks).encode(), 600))
@@ -625,10 +626,11 @@ class ResolverExtensionPoints(Fixture):
                 return None if keyid == kid else super().resolve(keyid, operator, now)
 
         res = Revoking([AGENT], fetch=lambda url: (json.dumps(self.jwks).encode(), 600))
+        res.resolve("warm-the-cache", AGENT, NOW)  # a cold cache would read as unavailable
         r = Verifier(res, clock=clock).verify(self.signed())
         self.assertEqual((r.outcome, r.reason), (Outcome.INVALID, "unknown keyid for allowlisted operator"))
 
-    def test_getattr_wrapper_resolve_is_used_not_the_inner_lookup(self):
+    def test_getattr_wrapper_resolve_is_used(self):
         class Downgrade:
             def __init__(self, inner):
                 self.inner = inner
@@ -669,6 +671,89 @@ class ResolverExtensionPoints(Fixture):
         r = Verifier(DirectoryKeyResolver([AGENT], fetch=down), clock=clock).verify(self.signed())
         self.assertEqual((r.outcome, r.reason), (Outcome.UNKNOWN_OPERATOR, "key directory unavailable"))
 
+    def test_instance_patched_resolve_can_revoke_with_fresh_cache(self):
+        kid = jwk_thumbprint(public_jwk(self.key))
+        res = self.directory()
+        res.resolve("warm-the-cache", AGENT, NOW)
+        orig = res.resolve
+        res.resolve = lambda k, o, n: None if k == kid else orig(k, o, n)
+        r = Verifier(res, clock=clock).verify(self.signed())
+        self.assertEqual((r.outcome, r.reason), (Outcome.INVALID, "unknown keyid for allowlisted operator"))
+
+    def test_instance_partial_resolve_can_downgrade_trust(self):
+        def downgrade(inner, keyid, operator, now):
+            r = inner(keyid, operator, now)
+            return r and dataclasses.replace(r, trusted=False)
+
+        res = self.directory()
+        res.resolve = functools.partial(downgrade, res.resolve)
+        r = Verifier(res, clock=clock).verify(self.signed())
+        self.assertEqual(r.outcome, Outcome.SIGNED_UNTRUSTED)
+
+    def test_unavailable_flag_is_not_consulted_when_resolve_returns_a_key(self):
+        class Flagged(StaticKeyResolver):
+            def directory_unavailable(self, operator, now):
+                return True
+
+        r = Verifier(Flagged({AGENT: self.jwks}), clock=clock).verify(self.signed())
+        self.assertEqual(r.outcome, Outcome.VERIFIED)
+
+    def test_unavailable_flag_true_with_no_key_is_unknown_operator_not_hostile(self):
+        class Flagged(StaticKeyResolver):
+            def directory_unavailable(self, operator, now):
+                return True
+
+        r = Verifier(Flagged({AGENT: {"keys": []}}), clock=clock).verify(self.signed())
+        self.assertEqual((r.outcome, r.reason), (Outcome.UNKNOWN_OPERATOR, "key directory unavailable"))
+        self.assertFalse(r.hostile)
+
+    def test_unavailable_flag_false_with_no_key_stays_invalid(self):
+        r = Verifier(StaticKeyResolver({AGENT: {"keys": []}}), clock=clock).verify(self.signed())
+        self.assertEqual(r.outcome, Outcome.INVALID)
+
+
+class DirectoryUnavailable(Fixture):
+    def make(self, ttl=300):
+        self.calls = []
+        return DirectoryKeyResolver([AGENT], fetch=lambda url: (
+            self.calls.append(url) or json.dumps(self.jwks).encode(), ttl))
+
+    def test_cold_cache_is_unavailable_without_fetching(self):
+        res = self.make()
+        self.assertTrue(res.directory_unavailable(AGENT, NOW))
+        self.assertEqual((self.calls, res._cache, res._last_fetch), ([], {}, {}))
+
+    def test_fresh_cache_is_available_and_expired_cache_is_not(self):
+        res = self.make()
+        res.resolve("x", AGENT, NOW)
+        before = dict(res._cache)
+        self.assertFalse(res.directory_unavailable(AGENT, NOW + 299))
+        self.assertTrue(res.directory_unavailable(AGENT, NOW + 300))
+        self.assertEqual((len(self.calls), res._cache), (1, before))
+
+    def test_not_allowlisted_or_missing_operator_is_never_unavailable(self):
+        res = self.make()
+        self.assertFalse(res.directory_unavailable("https://stranger.example", NOW))
+        self.assertFalse(res.directory_unavailable(None, NOW))
+
+    def test_removed_operator_is_not_unavailable(self):
+        res = self.make()
+        res.resolve("x", AGENT, NOW)
+        res.allowlist.discard(AGENT)
+        self.assertFalse(res.directory_unavailable(AGENT, NOW + 300))
+
+    def test_fetch_completing_between_resolve_and_flag_never_trusts(self):
+        res = self.make()
+        kid = jwk_thumbprint(public_jwk(self.key))
+        orig = res.resolve
+        res.fetch = lambda url: (_ for _ in ()).throw(TimeoutError("down"))
+        got = orig(kid, AGENT, NOW)  # cold and failing: no key
+        res.fetch = lambda url: (json.dumps({"keys": []}).encode(), 600)
+        res._last_fetch.clear()
+        res._refresh(AGENT, NOW, force=False)  # a concurrent fetch lands now
+        self.assertIsNone(got)
+        self.assertFalse(res.directory_unavailable(AGENT, NOW))  # worst case: INVALID, never a key
+
 
 class DirectoryTrust(Fixture):
     def test_removed_operator_cached_key_is_untrusted(self):
@@ -708,7 +793,7 @@ class DirectoryTrust(Fixture):
         kid = jwk_thumbprint(public_jwk(self.key))
         self.assertTrue(res.resolve(kid, AGENT, NOW).trusted)
         res.allowlist.discard(AGENT)
-        self.assertEqual(res.lookup(kid, AGENT, NOW + 300), (None, False))
+        self.assertFalse(res.directory_unavailable(AGENT, NOW + 300))
         r = Verifier(res, clock=lambda: NOW + 300).verify(self.signed(created=NOW + 299, expires=NOW + 359))
         self.assertEqual((r.outcome, r.reason), (Outcome.UNKNOWN_OPERATOR, "no key for this operator"))
 

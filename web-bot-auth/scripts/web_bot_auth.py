@@ -543,7 +543,10 @@ class ResolvedKey:
 
 
 class KeyResolver(Protocol):
-    # Optional extra: DirectoryKeyResolver.lookup(); used only if resolve() is not overridden.
+    # Optional extra, looked up with getattr and read only after resolve() returned
+    # None: ``directory_unavailable(operator, now) -> bool``. It must be side-effect
+    # free. True turns that failure into UNKNOWN_OPERATOR ("key directory
+    # unavailable") instead of INVALID; it can never yield a key or trust.
     def resolve(self, keyid: str, operator: Optional[str], now: float) -> Optional[ResolvedKey]: ...
 
     def is_allowlisted(self, operator: Optional[str]) -> bool: ...
@@ -627,15 +630,8 @@ class DirectoryKeyResolver:
             self._cache[op] = (keys, now + ttl, True)
 
     def resolve(self, keyid, operator, now):
-        return self.lookup(keyid, operator, now)[0]
-
-    def lookup(self, keyid, operator, now):
-        """Return ``(key or None, directory_unavailable)`` from one cache snapshot.
-
-        Unavailable = key missing, operator allowlisted, no fresh directory cached.
-        """
         if operator is None:
-            return None, False
+            return None
         if operator in self.allowlist:
             try:
                 self._refresh(operator, now, force=False)
@@ -645,18 +641,28 @@ class DirectoryKeyResolver:
             except Exception:
                 pass  # keep serving the last good copy if there is one
         cached = self._cache.get(operator)
-        allowlisted = operator in self.allowlist
         if not cached:
-            return None, allowlisted
+            return None
         keys, expires_at, trusted = cached
-        trusted = trusted and allowlisted
+        # Re-read after any fetch: removal from the allowlist mid-fetch revokes trust.
+        trusted = trusted and operator in self.allowlist
         if not trusted and expires_at <= now:
-            return None, False
+            return None
         k = keys.get(keyid)
-        if k is None or not k.usable(now):
-            # An expired copy cannot rule out a rotated key we failed to fetch.
-            return None, allowlisted and expires_at <= now
-        return ResolvedKey(k.key, trusted), False
+        return ResolvedKey(k.key, trusted) if k is not None and k.usable(now) else None
+
+    def directory_unavailable(self, operator, now) -> bool:
+        """True if an allowlisted operator has no fresh cached directory.
+
+        Read-only: no fetch, no mutation. Called only after resolve() found no
+        key, to tell a transient outage from a genuinely unknown key. An expired
+        copy cannot rule out a rotated key we failed to fetch.
+        """
+        if operator not in self.allowlist:
+            return False
+        with self._lock:
+            cached = self._cache.get(operator)
+        return cached is None or cached[1] <= now
 
 
 def safe_fetch_directory(url: str, timeout: float = 2.0, max_bytes: int = 65536) -> tuple:
@@ -927,14 +933,12 @@ class Verifier:
     def _resolve_key(self, res: Result, keyid: str, operator, now: float) -> Optional[ResolvedKey]:
         """Return the key, or None after setting ``res.outcome``/``res.reason``."""
         keys = self.keys
-        # Class-level, and only if resolve() is not overridden: a subclass or
-        # __getattr__ wrapper that revokes keys in resolve() must not be bypassed.
-        if getattr(type(keys), "resolve", None) is DirectoryKeyResolver.resolve:
-            resolved, unavailable = keys.lookup(keyid, operator, now)
-        else:
-            resolved, unavailable = keys.resolve(keyid, operator, now), False
+        resolved = keys.resolve(keyid, operator, now)
         if resolved is not None:
             return resolved
+        # Asked only after resolve() found nothing, so it cannot affect key or trust.
+        check = getattr(keys, "directory_unavailable", None)
+        unavailable = callable(check) and check(operator, now) is True
         if unavailable:
             # A transient fetch failure must not read as a hostile signature.
             res.outcome, res.reason = Outcome.UNKNOWN_OPERATOR, "key directory unavailable"
