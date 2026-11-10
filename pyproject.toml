@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+# Development tooling only. The shipped skill is the web-bot-auth/ folder, and
+# web_bot_auth.py stays a single file that needs just `cryptography`.
+[project]
+name = "web-bot-auth-skill"
+version = "0.1.0"
+description = "Development environment for the web-bot-auth Agent Skill"
+requires-python = ">=3.9"
+dependencies = ["cryptography"]
+
+[tool.uv]
+package = false

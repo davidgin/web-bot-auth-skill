@@ -17,14 +17,14 @@ jobs:
             os: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           python-version: ${{ matrix.python }}
-      - run: pip install cryptography
-      - run: python -m unittest -v test_web_bot_auth
+      - run: uv sync --locked
+      - run: uv run python -m unittest -v test_web_bot_auth
         working-directory: web-bot-auth/scripts
-      - run: python scripts/check_size.py
+      - run: uv run python scripts/check_size.py
         if: matrix.python == '3.13'
-      - run: python -m unittest -v test_check_size
+      - run: uv run python -m unittest -v test_check_size
         working-directory: scripts
         if: matrix.python == '3.13'

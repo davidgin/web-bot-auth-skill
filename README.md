@@ -65,15 +65,19 @@ Keys come only from the allowlisted origin's `/.well-known/http-message-signatur
 
 See `web-bot-auth/SKILL.md` for the outcome table and the rules that keep this safe.
 
-## Tests
+## Development
+
+This repo uses [uv](https://docs.astral.sh/uv/) for the dev environment (`pyproject.toml` and `uv.lock` at the root; they are not part of the shipped skill).
 
 ```sh
-pip install cryptography
+uv sync
 cd web-bot-auth/scripts
-python -m unittest -v test_web_bot_auth
+uv run python -m unittest -v test_web_bot_auth
 ```
 
-If you change verification behavior, regenerate the vectors with `python generate_vectors.py > ../assets/test-vectors.json`. A test fails if they are out of date.
+If you change verification behavior, regenerate the vectors with `uv run python generate_vectors.py > ../assets/test-vectors.json` (from `web-bot-auth/scripts`). A test fails if they are out of date.
+
+The verifier needs only `cryptography`, so `pip install cryptography` in any virtualenv works too (for example when you vendor the file).
 
 ## What this does not do
 
