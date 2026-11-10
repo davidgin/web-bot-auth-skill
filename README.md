@@ -2,6 +2,20 @@
 
 An Agent Skill that teaches coding agents to add **Web Bot Auth** verification to a web service. With it, AI agents and bots that sign their requests (HTTP Message Signatures, RFC 9421, Ed25519) can be identified, and forged or replayed signatures are rejected.
 
+## The problem, and how this solves it
+
+Services cannot easily tell a legitimate AI agent or crawler from a scraper or impersonator. User-Agent strings and IP ranges are easy to spoof or are shared, so firewalls either block useful agents or let impostors through. Web Bot Auth lets an agent operator sign each request (RFC 9421, Ed25519) with keys published in a key directory, so a server can check cryptographically who sent it.
+
+Verification is easy to get subtly wrong, and each mistake becomes a bypass. This skill handles the ones that matter:
+
+- rebuilding the signed request correctly behind proxies (host and path);
+- replay (nonces and `created` age);
+- body binding (`Content-Digest`) and partially covered signatures;
+- SSRF when fetching keys;
+- trusting only allowlisted operators.
+
+The skill walks a coding agent through the policy decisions with you, gives it a reference verifier to vendor into your project plus attack tests, and provides language-neutral vectors for ports. Results split traffic into verified agents, hostile requests (block), and unsigned or unknown traffic (your existing bot handling).
+
 The skill bundles:
 
 - **A reference verifier** (`web-bot-auth/scripts/web_bot_auth.py`): a single Python file whose only dependency is `cryptography`. It covers RFC 8941 parsing, RFC 9421 signature bases, Ed25519, RFC 9530 Content-Digest, JWK thumbprints, SSRF-guarded key directory fetching and nonce-based replay protection.
@@ -28,6 +42,8 @@ Then ask something like: *"Add Web Bot Auth verification to this FastAPI app"* o
 ```python
 from web_bot_auth import Verifier, DirectoryKeyResolver, RedisNonceStore, Request, Outcome
 
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
 verifier = Verifier(
     keys=DirectoryKeyResolver(allowlist=["https://agent.example"]),
     nonces=RedisNonceStore(redis_client),
@@ -36,10 +52,17 @@ result = verifier.verify(Request(method, absolute_url, header_pairs, raw_body))
 if result.hostile:
     ...  # block: invalid, expired or replayed signature
 elif result.outcome is Outcome.VERIFIED:
-    ...  # known agent operator; still apply per-user auth and rate limits
+    if (result.binds_request and result.replay_protected) or method in SAFE_METHODS:
+        ...  # known agent operator; still apply per-user auth and rate limits
+    else:
+        ...  # signature does not bind the request or has no nonce: not enough for a state-changing method
 else:
     ...  # unsigned or unknown: your existing bot handling
 ```
+
+A `VERIFIED` result can still have `binds_request` false (the signature does not cover the method, path, query and body) or `replay_protected` false (no nonce, or the nonce store was unavailable). The example admits those only for safe methods. For strict mode, pass `policy=Policy(require_binding=True, require_nonce=True)` to `Verifier` (import `Policy` from `web_bot_auth`); such signatures then become `invalid` instead.
+
+Keys come only from the allowlisted origin's `/.well-known/http-message-signatures-directory`, or from a full HTTPS directory URL given as the allowlist entry. A request can never choose where keys are fetched from. Conflicting entries for the same origin raise `ValueError`.
 
 See `web-bot-auth/SKILL.md` for the outcome table and the rules that keep this safe.
 
