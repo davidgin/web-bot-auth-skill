@@ -43,7 +43,7 @@ Spec status: targets `draft-meunier-web-bot-auth-architecture-05` (an IETF Inter
 | `expired` | Outside its time window | Block |
 | `replay` | Nonce already used | Block |
 
-`Result.hostile` is true for the last three. For `verified`, also check two flags. If `binds_request` is false, the signature doesn't cover the method, path, query and body. If `replay_protected` is false, there was no nonce or the store was unavailable. A sensible default is to admit verified requests with either flag false for safe methods (GET, HEAD) only.
+`Result.hostile` is true for the last three. For `verified`, also check two flags. If `binds_request` is false, the signature doesn't cover the method, path, query and body. If `replay_protected` is false, there was no nonce or the store was unavailable. A sensible default is to admit verified requests with either flag false for safe methods (GET, HEAD, OPTIONS) only.
 
 ## Rules that are easy to break
 
