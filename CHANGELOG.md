@@ -7,13 +7,15 @@
 
 ### Security
 
-- The commit originally published as v0.1.0 (afc43d9, before any release) let a request's `Signature-Agent` choose the key-directory URL on an allowlisted origin before the signature was verified. That allowed impersonation of allowlisted operators and lockout. Anyone who vendored `web_bot_auth.py` from that commit should update.
+- The initial public commit afc43d9, labelled v0.1.0 (no tag or release was cut), let a request's `Signature-Agent` choose the key-directory URL on an allowlisted origin before the signature was verified. That allowed impersonation of allowlisted operators and lockout: attacker-chosen keys were cached as trusted for up to 24 h. It also let requests with a not-yet-verified signature add entries to an unbounded in-memory table (any origin, allowlisted or not), and fetches on a cold cache were not rate-limited.
+- The fixed version is v0.1.0 as tagged (the tag is cut on the merge commit of the fix PR). The version number is the same as afc43d9, so anyone who vendored `web_bot_auth.py` from afc43d9 should compare their copy with the tagged release and update.
 - Directory locations now come only from configuration: the origin's well-known path, or a full https URL given as the allowlist entry. Conflicting entries raise `ValueError`.
 - The refetch rate limit now applies to cold and failed fetches.
-- Trust is revoked when an operator is removed from the allowlist.
+- Trust is revoked when an operator is removed from the allowlist. Before the fix, the keys of an operator removed from the allowlist at runtime stayed `verified` for up to 24 h.
 
 ### Changed / Removed
 
+- **Check your allowlist before updating.** An allowlist entry with a path or query now pins that exact directory URL; at afc43d9 the path was ignored and the origin's well-known path was used. For example, `https://agent.example/operator` must become `https://agent.example` unless that path really is the directory. Entries with userinfo or a fragment now raise `ValueError`.
 - Removed `DirectoryKeyResolver.register_agent_url`.
-- When an allowlisted operator has no usable keys, the result is `unknown_operator` with reason "key directory unavailable" instead of `invalid`.
+- The result is now `unknown_operator` with reason "key directory unavailable" instead of `invalid` only when the allowlisted operator has no fresh cached copy of its key directory (the cold fetch is in flight or failed, or the cache expired and the refresh failed) and the keyid is not in the stale copy. A keyid missing from a fresh directory stays `invalid`. During such an outage, forged requests are reported as `unknown_operator`, not as hostile; this costs detection signal but grants no access.
 - New optional resolver method `directory_unavailable(operator, now)`.
