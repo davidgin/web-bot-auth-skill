@@ -499,11 +499,14 @@ class DirectoryRefetch(Fixture):
                         others = [pool.submit(verifier.verify, request) for _ in range(7)]
                         results = [future.result(timeout=2) for future in others]
                         self.assertEqual(calls, [AGENT + WELL_KNOWN_DIRECTORY])
-                        self.assertTrue(all(r.outcome == Outcome.INVALID for r in results))
+                        # No keys yet is "directory unavailable", never hostile.
+                        self.assertTrue(all(r.outcome == Outcome.UNKNOWN_OPERATOR for r in results))
+                        self.assertFalse(any(r.hostile for r in results))
+                        self.assertEqual({r.reason for r in results}, {"key directory unavailable"})
                     finally:
                         release.set()
                     result = first.result(timeout=2)
-                expected = Outcome.INVALID if fails else Outcome.VERIFIED
+                expected = Outcome.UNKNOWN_OPERATOR if fails else Outcome.VERIFIED
                 self.assertEqual(result.outcome, expected)
 
     def test_warm_cache_survives_failed_rotation_and_limits_unknown_keyids(self):
@@ -522,6 +525,89 @@ class DirectoryRefetch(Fixture):
             self.assertIsNone(res.resolve(f"unknown-{i}", AGENT, NOW + 61))
         self.assertTrue(res.resolve(kid, AGENT, NOW + 301).trusted)
         self.assertEqual(calls, [AGENT + WELL_KNOWN_DIRECTORY] * 3)
+
+
+class DirectoryUnavailable(Fixture):
+    """No usable keys for an allowlisted operator is not evidence of a bad signature."""
+
+    def setUp(self):
+        super().setUp()
+        self.now = NOW
+        self.calls = []
+        self.fail = True
+
+    def fetch(self, url):
+        self.calls.append(self.now)
+        if self.fail:
+            raise TimeoutError("directory timeout")
+        return json.dumps(self.jwks).encode(), 300
+
+    def verifier_for(self, resolver):
+        return Verifier(resolver, InMemoryNonceStore(clock=lambda: self.now), clock=lambda: self.now)
+
+    def request(self, key=None, nonce=NONCE):
+        return sign_request(
+            Request("GET", "https://shop.example/items/42", [("host", "shop.example")]),
+            key or self.key, components=("@method", "@authority", "@path", "signature-agent"),
+            created=self.now - 1, expires=self.now + 59, nonce=nonce, agent=AGENT)
+
+    def assert_unavailable(self, result):
+        self.assertEqual(result.outcome, Outcome.UNKNOWN_OPERATOR, result.reason)
+        self.assertEqual(result.reason, "key directory unavailable")
+        self.assertFalse(result.hostile)
+        self.assertEqual(result.operator, AGENT)
+
+    def test_failed_cold_fetch_is_not_hostile_and_stays_rate_limited(self):
+        v = self.verifier_for(DirectoryKeyResolver([AGENT], fetch=self.fetch))
+        for offset in (0, 1, 59):
+            self.now = NOW + offset
+            self.assert_unavailable(v.verify(self.request(nonce=f"bm9uY2Utbm9uY2Utbm9uY2Ux{offset:02d}==")))
+        self.assertEqual(self.calls, [NOW])
+        self.fail, self.now = False, NOW + 60
+        self.assertEqual(v.verify(self.request()).outcome, Outcome.VERIFIED)
+        self.assertEqual(self.calls, [NOW, NOW + 60])
+
+    def test_expired_cache_with_failed_refresh_is_not_hostile(self):
+        res = DirectoryKeyResolver([AGENT], fetch=self.fetch)
+        v = self.verifier_for(res)
+        self.fail = False
+        self.assertEqual(v.verify(self.request()).outcome, Outcome.VERIFIED)
+        self.fail, self.now = True, NOW + 400  # past the 300 s ttl; refresh fails
+        rotated = Ed25519PrivateKey.generate()
+        self.assert_unavailable(v.verify(self.request(rotated)))
+        self.assertEqual(self.calls, [NOW, NOW + 400])
+        # Last good copy still serves keys it holds (stale-on-error is kept).
+        self.assertEqual(v.verify(self.request(nonce=NONCE[:-3] + "xy=")).outcome, Outcome.VERIFIED)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_warm_cache_with_unknown_keyid_stays_invalid(self):
+        self.fail = False
+        v = self.verifier_for(DirectoryKeyResolver([AGENT], fetch=self.fetch))
+        self.assertEqual(v.verify(self.request()).outcome, Outcome.VERIFIED)
+        self.now = NOW + 61
+        r = v.verify(self.request(Ed25519PrivateKey.generate()))
+        self.assertEqual(r.outcome, Outcome.INVALID)
+        self.assertEqual(r.reason, "unknown keyid for allowlisted operator")
+        self.assertTrue(r.hostile)
+        self.assertEqual(self.calls, [NOW, NOW + 61])  # one rate-limited rotation refetch
+
+    def test_warm_cache_unknown_keyid_while_refetch_fails_stays_invalid(self):
+        self.fail = False
+        v = self.verifier_for(DirectoryKeyResolver([AGENT], fetch=self.fetch))
+        v.verify(self.request())
+        self.fail, self.now = True, NOW + 61
+        r = v.verify(self.request(Ed25519PrivateKey.generate()))
+        self.assertEqual(r.outcome, Outcome.INVALID)
+
+    def test_non_allowlisted_operator_still_unknown_without_fetch(self):
+        v = self.verifier_for(DirectoryKeyResolver([AGENT], fetch=self.fetch))
+        req = sign_request(
+            Request("GET", "https://shop.example/", [("host", "shop.example")]), self.key,
+            components=("@method", "@authority", "@path", "signature-agent"),
+            created=NOW - 1, expires=NOW + 59, nonce=NONCE, agent="https://stranger.example")
+        r = v.verify(req)
+        self.assertEqual((r.outcome, r.reason), (Outcome.UNKNOWN_OPERATOR, "no key for this operator"))
+        self.assertEqual(self.calls, [])
 
 
 class DirectoryTrust(Fixture):

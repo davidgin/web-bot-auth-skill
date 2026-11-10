@@ -38,8 +38,8 @@ Spec status: targets `draft-meunier-web-bot-auth-architecture-05` (an IETF Inter
 | `unsigned` | No `web-bot-auth` signature | Existing bot handling / risk scoring |
 | `verified` | Valid signature, allowlisted operator | Admit as that agent; still apply per-user auth and rate limits |
 | `signed_untrusted` | Valid signature, known but not allowlisted operator | Treat as unsigned, optionally with lower risk |
-| `unknown_operator` | Well-formed, but no key available | Treat as unsigned; optionally queue a background directory fetch |
-| `invalid` | Present and wrong | Block. Legitimate clients do not send broken signatures |
+| `unknown_operator` | Well-formed, but no key available: operator not allowlisted (`no key for this operator`), or an allowlisted operator's directory is unavailable (`key directory unavailable`: cold fetch in flight or failed, or cache expired and refresh failed) | Treat as unsigned; optionally queue a background directory fetch. Not hostile: a transient fetch failure must not block a legitimate agent |
+| `invalid` | Present and wrong, including a keyid missing from a fresh cached directory of an allowlisted operator | Block. Legitimate clients do not send broken signatures |
 | `expired` | Outside its time window | Block |
 | `replay` | Nonce already used | Block |
 

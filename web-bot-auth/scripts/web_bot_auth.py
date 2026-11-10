@@ -626,8 +626,19 @@ class DirectoryKeyResolver:
             self._cache[op] = (keys, now + ttl, True)
 
     def resolve(self, keyid, operator, now):
+        return self.lookup(keyid, operator, now)[0]
+
+    def lookup(self, keyid, operator, now):
+        """Return ``(ResolvedKey or None, directory_unavailable)``.
+
+        ``directory_unavailable`` is true only when the key is missing AND this
+        operator is allowlisted AND no fresh directory is cached (cold fetch in
+        flight or failed, or the cache expired and the refresh did not
+        succeed). Both answers come from one cache snapshot so a fetch finishing
+        in between cannot turn "unavailable" into a hostile "unknown keyid".
+        """
         if operator is None:
-            return None
+            return None, False
         if operator in self.allowlist:
             try:
                 self._refresh(operator, now, force=False)
@@ -637,16 +648,18 @@ class DirectoryKeyResolver:
             except Exception:
                 pass  # keep serving the last good copy if there is one
         cached = self._cache.get(operator)
+        allowlisted = operator in self.allowlist
         if not cached:
-            return None
+            return None, allowlisted
         keys, expires_at, trusted = cached
-        trusted = trusted and operator in self.allowlist
+        trusted = trusted and allowlisted
         if not trusted and expires_at <= now:
-            return None
+            return None, False
         k = keys.get(keyid)
         if k is None or not k.usable(now):
-            return None
-        return ResolvedKey(k.key, trusted)
+            # An expired copy cannot rule out a rotated key we failed to fetch.
+            return None, allowlisted and expires_at <= now
+        return ResolvedKey(k.key, trusted), False
 
 
 def safe_fetch_directory(url: str, timeout: float = 2.0, max_bytes: int = 65536) -> tuple:
@@ -870,8 +883,18 @@ class Verifier:
             if cd is None or not content_digest_matches(cd, req.body):
                 res.reason = "content-digest does not match body"; return res
 
-        resolved = self.keys.resolve(keyid, operator, now)
+        # Optional resolver extension: tells "no keys available right now" apart
+        # from "keys known, this keyid is not among them".
+        lookup = getattr(self.keys, "lookup", None)
+        if lookup is not None:
+            resolved, unavailable = lookup(keyid, operator, now)
+        else:
+            resolved, unavailable = self.keys.resolve(keyid, operator, now), False
         if resolved is None:
+            if unavailable:
+                # A transient fetch failure must not read as a hostile signature.
+                res.outcome, res.reason = Outcome.UNKNOWN_OPERATOR, "key directory unavailable"
+                return res
             if self.keys.is_allowlisted(operator):
                 res.reason = "unknown keyid for allowlisted operator"; return res
             res.outcome, res.reason = Outcome.UNKNOWN_OPERATOR, "no key for this operator"
