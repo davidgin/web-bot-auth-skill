@@ -38,18 +38,19 @@ Spec status: targets `draft-meunier-web-bot-auth-architecture-05` (an IETF Inter
 | `unsigned` | No `web-bot-auth` signature | Existing bot handling / risk scoring |
 | `verified` | Valid signature, allowlisted operator | Admit as that agent; still apply per-user auth and rate limits |
 | `signed_untrusted` | Valid signature, known but not allowlisted operator | Treat as unsigned, optionally with lower risk |
-| `unknown_operator` | Well-formed, but no key available | Treat as unsigned; optionally queue a background directory fetch |
-| `invalid` | Present and wrong | Block. Legitimate clients do not send broken signatures |
+| `unknown_operator` | Well-formed, but no key available: operator not allowlisted (`no key for this operator`), or an allowlisted operator's directory is unavailable (`key directory unavailable`: cold fetch in flight or failed, or cache expired and refresh failed) | Treat as unsigned; optionally queue a background directory fetch. Not hostile: a transient fetch failure must not block a legitimate agent |
+| `invalid` | Present and wrong, including a keyid missing from a fresh cached directory of an allowlisted operator | Block. Legitimate clients do not send broken signatures |
 | `expired` | Outside its time window | Block |
 | `replay` | Nonce already used | Block |
 
-`Result.hostile` is true for the last three. For `verified`, also check two flags. If `binds_request` is false, the signature doesn't cover the method, path, query and body. If `replay_protected` is false, there was no nonce or the store was unavailable. A sensible default is to admit verified requests with either flag false for safe methods (GET, HEAD) only.
+`Result.hostile` is true for the last three. For `verified`, also check two flags. If `binds_request` is false, the signature doesn't cover the method, path, query and body. If `replay_protected` is false, there was no nonce or the store was unavailable. A sensible default is to admit verified requests with either flag false for safe methods (GET, HEAD, OPTIONS) only.
 
 ## Rules that are easy to break
 
 These exist because each one has a concrete attack behind it. If the user's constraints seem to require breaking one, explain the risk and let them decide.
 
 - **Never fetch a key directory inline for an operator that isn't allowlisted.** `Signature-Agent` is attacker-controlled, so fetching whatever it names is SSRF and lets anyone stall your request path. Fetch unknown operators in a background job with `safe_fetch_directory`, or not at all.
+- **Configure the trusted directory URL on the server.** `DirectoryKeyResolver(["https://agent.example"])` uses that origin's `/.well-known/http-message-signatures-directory`. A full HTTPS allowlist entry, such as `https://agent.example/operator/keys.json?version=2`, selects a fixed path and query for that origin. Fragments and userinfo are rejected. Directory locations come only from the allowlist configuration; requests cannot select or update them. Fetch attempts are limited per operator (once a minute by default), including cold starts and failures. Removing an origin from `resolver.allowlist` immediately stops its cached keys resolving as trusted.
 - **Verify Content-Digest against the body whenever it is covered.** Signing the header is meaningless if nobody checks that it matches the bytes received.
 - **Record the nonce only after the signature verifies.** Otherwise anyone can fill the store, or burn a legitimate agent's nonces in advance.
 - **Use a shared, atomic nonce store across instances.** A per-process cache lets a replay land on a different worker.

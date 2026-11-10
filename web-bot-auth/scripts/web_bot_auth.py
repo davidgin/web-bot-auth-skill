@@ -527,11 +527,13 @@ def normalize_origin(url: str) -> str:
 
 
 def directory_url(signature_agent: str) -> str:
-    """The directory URL for a Signature-Agent value: as-is if it has a path, else the well-known path."""
+    """Resolve a server-configured allowlist entry, never a request header."""
     u = urlsplit(signature_agent)
-    if u.path and u.path != "/":
-        return signature_agent
-    return normalize_origin(signature_agent) + WELL_KNOWN_DIRECTORY
+    origin = normalize_origin(signature_agent)
+    if u.fragment or u.username is not None or u.password is not None:
+        raise ValueError("directory URL must not contain a fragment or userinfo")
+    path = u.path if u.path and u.path != "/" else WELL_KNOWN_DIRECTORY
+    return origin + path + ("?" + u.query if u.query else "")
 
 
 @dataclass
@@ -541,6 +543,10 @@ class ResolvedKey:
 
 
 class KeyResolver(Protocol):
+    # Optional extra, looked up with getattr and read only after resolve() returned
+    # None: ``directory_unavailable(operator, now) -> bool``. It must be side-effect
+    # free. True turns that failure into UNKNOWN_OPERATOR ("key directory
+    # unavailable") instead of INVALID; it can never yield a key or trust.
     def resolve(self, keyid: str, operator: Optional[str], now: float) -> Optional[ResolvedKey]: ...
 
     def is_allowlisted(self, operator: Optional[str]) -> bool: ...
@@ -581,19 +587,21 @@ class DirectoryKeyResolver:
 
     def __init__(self, allowlist: Iterable[str], fetch: Callable[[str], tuple] = None,
                  min_ttl: int = 300, max_ttl: int = 86400, refetch_interval: int = 60):
-        self.allowlist = {normalize_origin(o) for o in allowlist}
+        self._directory_urls = {}
+        for entry in allowlist:
+            origin, url = normalize_origin(entry), directory_url(entry)
+            if origin in self._directory_urls and self._directory_urls[origin] != url:
+                raise ValueError(f"conflicting directory URLs for origin {origin}")
+            self._directory_urls[origin] = url
+        self.allowlist = set(self._directory_urls)
         self.fetch = fetch or safe_fetch_directory
         self.min_ttl, self.max_ttl, self.refetch_interval = min_ttl, max_ttl, refetch_interval
         self._cache = {}  # origin -> (keys, expires_at, trusted)
         self._last_fetch = {}
         self._lock = threading.Lock()
-        self._agent_urls = {}
 
     def is_allowlisted(self, operator):
         return operator in self.allowlist
-
-    def register_agent_url(self, operator: str, signature_agent: str):
-        self._agent_urls[operator] = signature_agent
 
     def add_untrusted_directory(self, operator: str, data, ttl: int = 3600, now: float = None):
         now = time.time() if now is None else now
@@ -608,10 +616,13 @@ class DirectoryKeyResolver:
             cached = self._cache.get(op)
             if cached and not force and cached[1] > now:
                 return
-            if now - self._last_fetch.get(op, -1e18) < self.refetch_interval and cached:
+            if now - self._last_fetch.get(op, -1e18) < self.refetch_interval:
                 return
+            # Reserve the attempt before I/O, including failures and cold starts.
             self._last_fetch[op] = now
-        url = directory_url(self._agent_urls.get(op, op))
+            url = self._directory_urls.get(op)
+            if url is None:
+                url = directory_url(op)
         body, max_age = self.fetch(url)
         ttl = min(max(max_age if max_age is not None else self.min_ttl, self.min_ttl), self.max_ttl)
         keys = parse_directory(body)
@@ -633,12 +644,25 @@ class DirectoryKeyResolver:
         if not cached:
             return None
         keys, expires_at, trusted = cached
+        # Re-read after any fetch: removal from the allowlist mid-fetch revokes trust.
+        trusted = trusted and operator in self.allowlist
         if not trusted and expires_at <= now:
             return None
         k = keys.get(keyid)
-        if k is None or not k.usable(now):
-            return None
-        return ResolvedKey(k.key, trusted)
+        return ResolvedKey(k.key, trusted) if k is not None and k.usable(now) else None
+
+    def directory_unavailable(self, operator, now) -> bool:
+        """True if an allowlisted operator has no fresh cached directory.
+
+        Read-only: no fetch, no mutation. Called only after resolve() found no
+        key, to tell a transient outage from a genuinely unknown key. An expired
+        copy cannot rule out a rotated key we failed to fetch.
+        """
+        if operator not in self.allowlist:
+            return False
+        with self._lock:
+            cached = self._cache.get(operator)
+        return cached is None or cached[1] <= now
 
 
 def safe_fetch_directory(url: str, timeout: float = 2.0, max_bytes: int = 65536) -> tuple:
@@ -854,8 +878,6 @@ class Verifier:
                 operator = normalize_origin(agent_url)
             except ValueError as e:
                 res.reason = str(e); return res
-            if hasattr(self.keys, "register_agent_url"):
-                self.keys.register_agent_url(operator, agent_url)
         res.operator = operator
 
         # Body integrity, if claimed.
@@ -864,11 +886,8 @@ class Verifier:
             if cd is None or not content_digest_matches(cd, req.body):
                 res.reason = "content-digest does not match body"; return res
 
-        resolved = self.keys.resolve(keyid, operator, now)
+        resolved = self._resolve_key(res, keyid, operator, now)
         if resolved is None:
-            if self.keys.is_allowlisted(operator):
-                res.reason = "unknown keyid for allowlisted operator"; return res
-            res.outcome, res.reason = Outcome.UNKNOWN_OPERATOR, "no key for this operator"
             return res
 
         base = signature_base(req, covered)
@@ -910,6 +929,24 @@ class Verifier:
         res.outcome = Outcome.VERIFIED if resolved.trusted else Outcome.SIGNED_UNTRUSTED
         res.reason = "ok"
         return res
+
+    def _resolve_key(self, res: Result, keyid: str, operator, now: float) -> Optional[ResolvedKey]:
+        """Return the key, or None after setting ``res.outcome``/``res.reason``."""
+        keys = self.keys
+        resolved = keys.resolve(keyid, operator, now)
+        if resolved is not None:
+            return resolved
+        # Asked only after resolve() found nothing, so it cannot affect key or trust.
+        check = getattr(keys, "directory_unavailable", None)
+        unavailable = callable(check) and check(operator, now) is True
+        if unavailable:
+            # A transient fetch failure must not read as a hostile signature.
+            res.outcome, res.reason = Outcome.UNKNOWN_OPERATOR, "key directory unavailable"
+        elif keys.is_allowlisted(operator):
+            res.reason = "unknown keyid for allowlisted operator"
+        else:
+            res.outcome, res.reason = Outcome.UNKNOWN_OPERATOR, "no key for this operator"
+        return None
 
     @staticmethod
     def _agent_url(header: str, comp: Item, label: str) -> Optional[str]:
