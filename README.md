@@ -40,9 +40,8 @@ Then ask something like: *"Add Web Bot Auth verification to this FastAPI app"* o
 ## Using the verifier directly
 
 ```python
-from web_bot_auth import Verifier, DirectoryKeyResolver, RedisNonceStore, Request, Outcome
-
-SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+from web_bot_auth import (SAFE_METHODS, DirectoryKeyResolver, Outcome, RedisNonceStore,
+                          Request, Verifier)
 
 verifier = Verifier(
     keys=DirectoryKeyResolver(allowlist=["https://agent.example"]),
@@ -52,7 +51,7 @@ result = verifier.verify(Request(method, absolute_url, header_pairs, raw_body))
 if result.hostile:
     ...  # block: invalid, expired or replayed signature
 elif result.outcome is Outcome.VERIFIED:
-    if (result.binds_request and result.replay_protected) or method in SAFE_METHODS:
+    if (result.binds_request and result.replay_protected) or method.upper() in SAFE_METHODS:
         ...  # known agent operator; still apply per-user auth and rate limits
     else:
         ...  # signature does not bind the request or has no nonce: not enough for a state-changing method

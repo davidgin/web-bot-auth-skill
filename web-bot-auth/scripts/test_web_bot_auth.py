@@ -2,6 +2,7 @@
 """Run with: python -m unittest -v test_web_bot_auth  (from this directory)."""
 
 import base64
+import dataclasses
 import json
 import threading
 import unittest
@@ -610,6 +611,65 @@ class DirectoryUnavailable(Fixture):
         self.assertEqual(self.calls, [])
 
 
+class ResolverExtensionPoints(Fixture):
+    """The optional DirectoryKeyResolver.lookup must never bypass a custom resolve()."""
+
+    def directory(self):
+        return DirectoryKeyResolver([AGENT], fetch=lambda url: (json.dumps(self.jwks).encode(), 600))
+
+    def test_subclass_overriding_resolve_can_revoke_a_key(self):
+        kid = jwk_thumbprint(public_jwk(self.key))
+
+        class Revoking(DirectoryKeyResolver):
+            def resolve(self, keyid, operator, now):
+                return None if keyid == kid else super().resolve(keyid, operator, now)
+
+        res = Revoking([AGENT], fetch=lambda url: (json.dumps(self.jwks).encode(), 600))
+        r = Verifier(res, clock=clock).verify(self.signed())
+        self.assertEqual((r.outcome, r.reason), (Outcome.INVALID, "unknown keyid for allowlisted operator"))
+
+    def test_getattr_wrapper_resolve_is_used_not_the_inner_lookup(self):
+        class Downgrade:
+            def __init__(self, inner):
+                self.inner = inner
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+
+            def resolve(self, keyid, operator, now):
+                r = self.inner.resolve(keyid, operator, now)
+                return r and dataclasses.replace(r, trusted=False)
+
+        r = Verifier(Downgrade(self.directory()), clock=clock).verify(self.signed())
+        self.assertEqual(r.outcome, Outcome.SIGNED_UNTRUSTED)
+
+    def test_pure_getattr_wrapper_without_resolve_still_delegates(self):
+        class Passthrough:
+            def __init__(self, inner):
+                self.inner = inner
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+
+        r = Verifier(Passthrough(self.directory()), clock=clock).verify(self.signed())
+        self.assertEqual(r.outcome, Outcome.VERIFIED)
+
+    def test_unrelated_lookup_method_on_custom_resolver_is_ignored(self):
+        class Custom(StaticKeyResolver):
+            def lookup(self, keyid):
+                raise AssertionError("must not be called by the verifier")
+
+        r = Verifier(Custom({AGENT: self.jwks}), clock=clock).verify(self.signed())
+        self.assertEqual(r.outcome, Outcome.VERIFIED)
+
+    def test_unmodified_directory_resolver_still_reports_unavailable(self):
+        def down(url):
+            raise TimeoutError("down")
+
+        r = Verifier(DirectoryKeyResolver([AGENT], fetch=down), clock=clock).verify(self.signed())
+        self.assertEqual((r.outcome, r.reason), (Outcome.UNKNOWN_OPERATOR, "key directory unavailable"))
+
+
 class DirectoryTrust(Fixture):
     def test_removed_operator_cached_key_is_untrusted(self):
         calls = []
@@ -642,6 +702,15 @@ class DirectoryTrust(Fixture):
         res = DirectoryKeyResolver([AGENT], fetch=fetch)
         result = Verifier(res, clock=clock).verify(self.signed())
         self.assertEqual(result.outcome, Outcome.SIGNED_UNTRUSTED)
+
+    def test_removed_operator_with_expired_cache_is_unknown_not_unavailable(self):
+        res = DirectoryKeyResolver([AGENT], fetch=lambda url: (json.dumps(self.jwks).encode(), 300))
+        kid = jwk_thumbprint(public_jwk(self.key))
+        self.assertTrue(res.resolve(kid, AGENT, NOW).trusted)
+        res.allowlist.discard(AGENT)
+        self.assertEqual(res.lookup(kid, AGENT, NOW + 300), (None, False))
+        r = Verifier(res, clock=lambda: NOW + 300).verify(self.signed(created=NOW + 299, expires=NOW + 359))
+        self.assertEqual((r.outcome, r.reason), (Outcome.UNKNOWN_OPERATOR, "no key for this operator"))
 
     def test_background_directory_stays_untrusted_and_expires(self):
         res = DirectoryKeyResolver([])

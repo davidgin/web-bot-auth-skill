@@ -543,6 +543,7 @@ class ResolvedKey:
 
 
 class KeyResolver(Protocol):
+    # Optional extra: DirectoryKeyResolver.lookup(); used only if resolve() is not overridden.
     def resolve(self, keyid: str, operator: Optional[str], now: float) -> Optional[ResolvedKey]: ...
 
     def is_allowlisted(self, operator: Optional[str]) -> bool: ...
@@ -629,13 +630,9 @@ class DirectoryKeyResolver:
         return self.lookup(keyid, operator, now)[0]
 
     def lookup(self, keyid, operator, now):
-        """Return ``(ResolvedKey or None, directory_unavailable)``.
+        """Return ``(key or None, directory_unavailable)`` from one cache snapshot.
 
-        ``directory_unavailable`` is true only when the key is missing AND this
-        operator is allowlisted AND no fresh directory is cached (cold fetch in
-        flight or failed, or the cache expired and the refresh did not
-        succeed). Both answers come from one cache snapshot so a fetch finishing
-        in between cannot turn "unavailable" into a hostile "unknown keyid".
+        Unavailable = key missing, operator allowlisted, no fresh directory cached.
         """
         if operator is None:
             return None, False
@@ -883,21 +880,8 @@ class Verifier:
             if cd is None or not content_digest_matches(cd, req.body):
                 res.reason = "content-digest does not match body"; return res
 
-        # Optional resolver extension: tells "no keys available right now" apart
-        # from "keys known, this keyid is not among them".
-        lookup = getattr(self.keys, "lookup", None)
-        if lookup is not None:
-            resolved, unavailable = lookup(keyid, operator, now)
-        else:
-            resolved, unavailable = self.keys.resolve(keyid, operator, now), False
+        resolved = self._resolve_key(res, keyid, operator, now)
         if resolved is None:
-            if unavailable:
-                # A transient fetch failure must not read as a hostile signature.
-                res.outcome, res.reason = Outcome.UNKNOWN_OPERATOR, "key directory unavailable"
-                return res
-            if self.keys.is_allowlisted(operator):
-                res.reason = "unknown keyid for allowlisted operator"; return res
-            res.outcome, res.reason = Outcome.UNKNOWN_OPERATOR, "no key for this operator"
             return res
 
         base = signature_base(req, covered)
@@ -939,6 +923,26 @@ class Verifier:
         res.outcome = Outcome.VERIFIED if resolved.trusted else Outcome.SIGNED_UNTRUSTED
         res.reason = "ok"
         return res
+
+    def _resolve_key(self, res: Result, keyid: str, operator, now: float) -> Optional[ResolvedKey]:
+        """Return the key, or None after setting ``res.outcome``/``res.reason``."""
+        keys = self.keys
+        # Class-level, and only if resolve() is not overridden: a subclass or
+        # __getattr__ wrapper that revokes keys in resolve() must not be bypassed.
+        if getattr(type(keys), "resolve", None) is DirectoryKeyResolver.resolve:
+            resolved, unavailable = keys.lookup(keyid, operator, now)
+        else:
+            resolved, unavailable = keys.resolve(keyid, operator, now), False
+        if resolved is not None:
+            return resolved
+        if unavailable:
+            # A transient fetch failure must not read as a hostile signature.
+            res.outcome, res.reason = Outcome.UNKNOWN_OPERATOR, "key directory unavailable"
+        elif keys.is_allowlisted(operator):
+            res.reason = "unknown keyid for allowlisted operator"
+        else:
+            res.outcome, res.reason = Outcome.UNKNOWN_OPERATOR, "no key for this operator"
+        return None
 
     @staticmethod
     def _agent_url(header: str, comp: Item, label: str) -> Optional[str]:
