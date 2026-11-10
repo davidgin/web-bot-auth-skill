@@ -583,7 +583,12 @@ class DirectoryKeyResolver:
 
     def __init__(self, allowlist: Iterable[str], fetch: Callable[[str], tuple] = None,
                  min_ttl: int = 300, max_ttl: int = 86400, refetch_interval: int = 60):
-        self._directory_urls = {normalize_origin(o): directory_url(o) for o in allowlist}
+        self._directory_urls = {}
+        for entry in allowlist:
+            origin, url = normalize_origin(entry), directory_url(entry)
+            if origin in self._directory_urls and self._directory_urls[origin] != url:
+                raise ValueError(f"conflicting directory URLs for origin {origin}")
+            self._directory_urls[origin] = url
         self.allowlist = set(self._directory_urls)
         self.fetch = fetch or safe_fetch_directory
         self.min_ttl, self.max_ttl, self.refetch_interval = min_ttl, max_ttl, refetch_interval
@@ -611,7 +616,9 @@ class DirectoryKeyResolver:
                 return
             # Reserve the attempt before I/O, including failures and cold starts.
             self._last_fetch[op] = now
-            url = self._directory_urls.get(op, directory_url(op))
+            url = self._directory_urls.get(op)
+            if url is None:
+                url = directory_url(op)
         body, max_age = self.fetch(url)
         ttl = min(max(max_age if max_age is not None else self.min_ttl, self.min_ttl), self.max_ttl)
         keys = parse_directory(body)

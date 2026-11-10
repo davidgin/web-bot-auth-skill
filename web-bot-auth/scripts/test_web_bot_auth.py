@@ -269,6 +269,44 @@ class DirectoryConfiguration(Fixture):
         self.assertEqual(Verifier(res, clock=clock).verify(self.signed()).outcome, Outcome.VERIFIED)
         self.assertEqual(fetched, [AGENT + WELL_KNOWN_DIRECTORY + "?version=2"])
 
+    def test_conflicting_custom_directories_rejected_in_any_order(self):
+        entries = [AGENT + "/a/keys.json", AGENT + "/b/keys.json"]
+        for allowlist in (set(entries), entries, entries[::-1]):
+            with self.subTest(allowlist=allowlist):
+                with self.assertRaisesRegex(ValueError, "https://agent[.]example"):
+                    DirectoryKeyResolver(allowlist)
+
+    def test_origin_and_custom_directory_conflict_in_any_order(self):
+        entries = [AGENT, AGENT + "/tenant/keys.json"]
+        for allowlist in (entries, entries[::-1]):
+            with self.subTest(allowlist=allowlist):
+                with self.assertRaisesRegex(ValueError, "https://agent[.]example"):
+                    DirectoryKeyResolver(allowlist)
+
+    def test_identical_normalized_directories_are_allowed(self):
+        entries = ["https://AGENT.example", AGENT]
+        for allowlist in (entries, entries[::-1]):
+            with self.subTest(allowlist=allowlist):
+                fetched = []
+                res = DirectoryKeyResolver(allowlist, fetch=lambda url: (
+                    fetched.append(url) or json.dumps(self.jwks).encode(), 600))
+                result = Verifier(res, clock=clock).verify(self.signed())
+                self.assertEqual(result.outcome, Outcome.VERIFIED)
+                self.assertEqual(res.allowlist, {AGENT})
+                self.assertEqual(fetched, [AGENT + WELL_KNOWN_DIRECTORY])
+
+    def test_runtime_added_normalized_origin_uses_well_known_directory(self):
+        fetched = []
+        res = DirectoryKeyResolver([], fetch=lambda url: (
+            fetched.append(url) or json.dumps(self.jwks).encode(), 600))
+        verifier = Verifier(res, clock=clock)
+        request = self.signed(agent=AGENT + "/request/keys.json?evil=1")
+        self.assertEqual(verifier.verify(request).outcome, Outcome.UNKNOWN_OPERATOR)
+        self.assertEqual(fetched, [])
+        res.allowlist.add(AGENT)
+        self.assertEqual(verifier.verify(request).outcome, Outcome.VERIFIED)
+        self.assertEqual(fetched, [AGENT + WELL_KNOWN_DIRECTORY])
+
     def test_invalid_directory_configuration_rejected(self):
         for entry in ("", "agent.example", "http://agent.example/keys", "https:///keys",
                       AGENT + "/keys#fragment", "https://user@agent.example/keys",
