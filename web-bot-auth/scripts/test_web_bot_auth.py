@@ -707,12 +707,34 @@ class ResolverExtensionPoints(Fixture):
         self.assertEqual((r.outcome, r.reason), (Outcome.UNKNOWN_OPERATOR, "key directory unavailable"))
         self.assertFalse(r.hostile)
 
+    def test_truthy_non_bool_unavailable_flag_stays_invalid(self):
+        # Only a real True may soften the outcome; a sloppy resolver must fail closed.
+        for value in (1, "yes", [1]):
+            with self.subTest(value=value):
+                class Flagged(StaticKeyResolver):
+                    def directory_unavailable(self, operator, now):
+                        return value
+
+                r = Verifier(Flagged({AGENT: {"keys": []}}), clock=clock).verify(self.signed())
+                self.assertEqual(r.outcome, Outcome.INVALID)
+
+    def test_revoking_resolve_on_cold_cache_is_unknown_operator_not_hostile(self):
+        class Revoking(DirectoryKeyResolver):
+            def resolve(self, keyid, operator, now):
+                return None  # returns before super().resolve(), so the cache is never filled
+
+        res = Revoking([AGENT], fetch=lambda url: (json.dumps(self.jwks).encode(), 300))
+        for _ in range(2):  # stays unavailable until something else warms the cache
+            r = Verifier(res, clock=clock).verify(self.signed())
+            self.assertEqual((r.outcome, r.reason), (Outcome.UNKNOWN_OPERATOR, "key directory unavailable"))
+            self.assertFalse(r.hostile)
+
     def test_unavailable_flag_false_with_no_key_stays_invalid(self):
         r = Verifier(StaticKeyResolver({AGENT: {"keys": []}}), clock=clock).verify(self.signed())
         self.assertEqual(r.outcome, Outcome.INVALID)
 
 
-class DirectoryUnavailable(Fixture):
+class DirectoryUnavailableFlag(Fixture):
     def make(self, ttl=300):
         self.calls = []
         return DirectoryKeyResolver([AGENT], fetch=lambda url: (
