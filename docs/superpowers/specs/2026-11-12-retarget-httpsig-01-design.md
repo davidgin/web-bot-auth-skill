@@ -257,7 +257,8 @@ without the header: with `DirectoryKeyResolver` it is `signed_untrusted`
 (operator None) when the key is in an unattributed pool (§3.7) and otherwise
 `unknown_operator` "no key for this operator"; with `StaticKeyResolver` it is
 what its `None` entry gives. It is never INVALID because of the label mismatch
-and never attributed. See the open marker on this point in Clarifications.
+and never attributed. Settled in Clarifications 2026-11-12c (the outcome stays
+`unknown_operator`).
 
 ### 3.5 Multiple signatures
 
@@ -390,8 +391,10 @@ so; they are specified in §9.
   E.1.1 and E.1.2 are INVALID "unsupported alg"; E.2.3's Content-Digest matches
   its body (directory response signatures are out of scope).
 - **FR-017** `assets/test-vectors.json` is regenerated: dictionary form by
-  default, one legacy-string vector, new cases for FR-001, FR-003, FR-004,
-  FR-006 and FR-021, `trusted_keys` keyed by normalized identifiers,
+  default, one legacy-string vector, new cases for FR-001, FR-003, FR-004
+  and FR-006 (FR-021 has no vector: the vector format has `trusted_keys` and a
+  `StaticKeyResolver` but no resolver pools, so FR-021 is unit-tested in T9),
+  `trusted_keys` keyed by normalized identifiers,
   `expected.operator` and `expected.claimed_agent` given for accepted outcomes,
   and a `normalization` section (input → identifier or `null` for reject) taken
   from the §3.1 table. A hand-written name → expected-outcome table in the test
@@ -480,7 +483,7 @@ so; they are specified in §9.
   reports 0 failures and 0 errors, and more tests than the baseline 84; the run
   output is saved and the count quoted in the PR.
 - **SC-003** `uv run python scripts/check_size.py` passes;
-  `web_bot_auth.py` is within the limit settled in Clarifications (1,100 today);
+  `web_bot_auth.py` is within the limit settled in Clarifications 2026-11-12c (1,150; it was 1,100 before that answer);
   no function > 50 lines; `scripts/size_baseline.json` is `{}`.
 - **SC-004** `test_vectors_file_is_current` passes; exactly one vector uses the
   legacy string form; the hand-written expectation table and the
@@ -528,8 +531,9 @@ so; they are specified in §9.
 ## 8. Risks
 
 - Line budget: the honest projection for 0.2.0 exceeds 1,100 lines (plan, "Line
-  budget": about 1,136 without cuts). It needs the decision in the second open
-  marker before T1.
+  budget": about 1,136 without cuts). Settled in Clarifications 2026-11-12c:
+  limit raised to 1,150 and `RedisNonceStore` moved out (about 1,123, margin
+  27).
 - Breaking changes for integrators: `operator` values gain a trailing `/` and
   path; allowlists naming the same host twice now mean two identifiers;
   `allowlist.add` needs normalized identifiers; custom resolvers receive
@@ -634,36 +638,28 @@ Meaning, as relayed by the lead agent:
 The earlier open marker on the line-budget fallback is superseded by the open
 marker below, which uses the re-estimate.
 
-Open:
+Open: none. The three markers that stood here were answered in 2026-11-12c.
 
-- [NEEDS CLARIFICATION: README sequencing. Default if unanswered: this PR
-  always fixes the one spec-status line on `main`'s README (line 28, which
-  says architecture-05). If `docs/readme` (62de1d4) merges first, rebase this
-  branch onto `main` before its first push and do the full README task (plan
-  T14b). If not, 0.2.0 ships without it, the release notes say the README
-  update is pending, and `docs/readme` must drop `agent_as_dictionary=True`
-  (README lines 105 and 113) and retarget lines 14 and 145–146 before it
-  merges. Approve or choose: rebase onto `docs/readme` now.]
-- [NEEDS CLARIFICATION: line limit for 0.2.0. Measured and estimated (plan,
-  "Line budget"): about 1,136 lines ±15 with no cuts, because §3.1 as now
-  specified is 77 lines in a prototype. Options: (A, recommended) raise the
-  `web_bot_auth.py` exception in the repo `AGENTS.md` and `check_size.py` from
-  1,100 to 1,150 and move `RedisNonceStore` to a snippet in
-  `references/nonce-stores.md` (−13 lines, removes a public name): about
-  1,123, margin 27; (B) keep 1,100 and apply three cuts: the
-  `RedisNonceStore` move, moving long docstrings of `Request`,
-  `StaticKeyResolver`, `DirectoryKeyResolver` and `safe_fetch_directory` into
-  `references/` with one-line summaries kept (−12), and rejecting dot segments
-  and host percent-encodings instead of normalizing them (−16, a deviation
-  from -01 §5.5's RFC 3986 normalization): about 1,095, margin 5, likely to
-  hit a stop-and-ask; (C) keep 1,100 and also defer the test-key denylist and
-  `max_keys` (contradicts decision 1a). Choose A, B or another limit.]
-- [NEEDS CLARIFICATION: no-URL outcome for an ignored member (§3.4 rule 3).
-  The relayed decision says "treated as no agent URL → signed_untrusted". With
-  this spec the no-URL path gives `signed_untrusted` only when the key is in
-  an unattributed pool; a key held only in an allowlisted identifier's cache
-  gives `unknown_operator`, as for a request without the header today. Making
-  it `signed_untrusted` there too means the no-URL lookup also searches every
-  allowlisted cache by keyid (-01 §6.10 allows "holds the key by other means"),
-  which also turns scenario 2 into `signed_untrusted` (operator None) and costs
-  about 3 lines. Default if unanswered: keep `unknown_operator`.]
+### 2026-11-12c (answers to the three open markers; plan approved)
+
+The user's reply, verbatim:
+
+> A, rec, rec, approved
+
+Meaning, in the order of the three markers and the plan:
+
+1. **Line limit: option A.** Raise the `web_bot_auth.py` exception in the repo
+   `AGENTS.md` and in `scripts/check_size.py` (`FILE_LIMIT_OVERRIDES`) from
+   1,100 to 1,150, and move `RedisNonceStore` to a snippet in
+   `references/nonce-stores.md` (removes a public name; Breaking in the
+   CHANGELOG). Options B and C are dropped.
+2. **No-URL outcome for an ignored member (rec).** The outcome stays
+   `unknown_operator` "no key for this operator" when the key is held only in
+   an allowlisted identifier's cache (§3.4 rule 3); `signed_untrusted` only
+   from an unattributed pool (§3.7). The no-URL lookup does not search
+   allowlisted caches by keyid.
+3. **README sequencing (rec).** The default applies: T14a always; T14b only if
+   `docs/readme` merges first, otherwise the CHANGELOG and PR body say
+   "README quick-start update pending" and a follow-up issue is filed.
+4. **Plan approved** (`docs/superpowers/plans/2026-11-12-retarget-httpsig-01.md`,
+   with the pre-flight rulings R1–R24 applied).
