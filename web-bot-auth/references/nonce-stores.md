@@ -11,12 +11,33 @@ Keys are `"{keyid}:{nonce}"`, and the TTL is `min(expires, created + max_age) - 
 
 | Store | How |
 | --- | --- |
-| Redis / Valkey (single primary) | `SET key 1 NX PX ttl`. Use the included `RedisNonceStore`. |
+| Redis / Valkey (single primary) | `SET key 1 NX PX ttl`. Use the `RedisNonceStore` snippet below. |
 | Redis Cluster | Same; keys hash to one slot each, so it's fine. Avoid reading from replicas. |
 | Memcached | `add` with expiry (atomic set-if-absent). |
 | PostgreSQL | Table with a unique key and `expires_at`; `INSERT ... ON CONFLICT DO NOTHING` and check the row count; delete expired rows periodically. |
 | Cloudflare Durable Objects | One object per keyid (or a shard of keys) holding a TTL'd map; operations on one object are serialized. |
 | DynamoDB | `PutItem` with `attribute_not_exists(pk)` and a TTL attribute. TTL deletion is lazy, so also compare `expires_at` on read. |
+
+### Redis snippet
+
+Copy this into your application. It takes any redis-py compatible client and raises `NonceStoreError` on connection errors, which the verifier turns into `Policy.fail_closed_methods` handling.
+
+```python
+from web_bot_auth import NonceStoreError
+
+
+class RedisNonceStore:
+    """Shared store using SET NX PX. Takes any redis-py compatible client."""
+
+    def __init__(self, client, prefix: str = "wba:nonce:"):
+        self.client, self.prefix = client, prefix
+
+    def add_if_absent(self, key, ttl_seconds):
+        try:
+            return bool(self.client.set(self.prefix + key, b"1", nx=True, px=int(ttl_seconds * 1000)))
+        except Exception as e:  # connection errors etc.
+            raise NonceStoreError(str(e)) from e
+```
 
 ## Not suitable
 
