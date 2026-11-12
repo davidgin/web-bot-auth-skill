@@ -636,6 +636,7 @@ class _Allowlist(set):
 class ResolvedKey:
     key: Ed25519PublicKey
     trusted: bool  # True only for allowlisted operators
+    attributed: bool = True  # False: the key carries no URL; forces trusted False and operator None
 
 
 class KeyResolver(Protocol):
@@ -663,7 +664,9 @@ class StaticKeyResolver:
             bad = TEST_KEY_THUMBPRINTS.intersection(parsed)
             if bad and not allow_test_keys:  # fail fast: a published key must not be configured
                 raise ValueError(f"configuration contains a known test key: {sorted(bad)[0]}")
-            self._keys[normalize_agent_url(op) if op else None] = parsed
+            ident = normalize_agent_url(op) if op else None
+            if self._keys.setdefault(ident, parsed) is not parsed:  # parity with FR-008
+                raise ValueError(f"two configured agents normalize to {ident}")
 
     def is_allowlisted(self, operator):
         return self.trusted and operator in self._keys
@@ -681,8 +684,8 @@ class DirectoryKeyResolver:
     ``allowlist`` holds full https URLs; each becomes an identifier (spec section 3.2) that
     fetches itself, or the well-known directory for a bare origin (a deviation from -01).
     ``resolver.allowlist`` is the set of identifiers; assigning a new set is unsupported.
-    Never fetches a URL named by a request (SSRF). Directories for other identifiers can be
-    added by a background job via ``add_untrusted_directory``; those keys resolve untrusted.
+    Never fetches a URL named by a request (SSRF). Keys added via ``add_untrusted_directory``
+    resolve untrusted, and carry no URL unless the caller ``fetched`` them (spec section 3.7).
     """
 
     def __init__(self, allowlist: Iterable[str], fetch: Callable[[str], tuple] = None,
@@ -699,18 +702,24 @@ class DirectoryKeyResolver:
         self.max_keys, self.allow_test_keys = max_keys, allow_test_keys
         self._cache = {}  # identifier -> (keys, expires_at, trusted)
         self._last_fetch = {}
+        self._pools = {}  # source URL -> (keys, expires_at); the source is only a replacement key
         self._lock = threading.Lock()
 
     def is_allowlisted(self, operator):
         return operator in self.allowlist
 
-    def add_untrusted_directory(self, operator: str, data, ttl: int = 3600, now: float = None):
+    def add_untrusted_directory(self, url: str, data, ttl: int = 3600, now: float = None, *,
+                                fetched: bool = False):
         now = time.time() if now is None else now
-        op = normalize_agent_url(operator)
+        op = normalize_agent_url(url)
         if op in self.allowlist:
-            raise ValueError("operator is allowlisted; it is fetched, not added")
-        with self._lock:
-            self._cache[op] = (parse_directory(data, self.max_keys, self.allow_test_keys), now + ttl, False)
+            raise ValueError("url is allowlisted; it is fetched, not added")
+        keys = parse_directory(data, self.max_keys, self.allow_test_keys)
+        with self._lock:  # only fetched=True ties the keys to url (-01 section 5.5.3)
+            if fetched:
+                self._cache[op] = (keys, now + ttl, False)
+            else:  # re-adding a source replaces its keys (-01 section 4.4, newer pair wins)
+                self._pools[op] = (keys, now + ttl)
 
     def _refresh(self, op: str, now: float, force: bool) -> None:
         with self._lock:
@@ -729,6 +738,16 @@ class DirectoryKeyResolver:
             self._cache[op] = (keys, now + ttl, True)
 
     def resolve(self, keyid, operator, now):
+        hit = self._resolve_own(keyid, operator, now)
+        # Removal wins: a fresh directory without the key is evidence against it (-01 4.4, 6.10).
+        if hit is not None or self.is_allowlisted(operator) and not self.directory_unavailable(operator, now):
+            return hit
+        with self._lock:  # a second acquisition; a refresh in between is as if it came later
+            pools = list(self._pools.values())
+        k = next((d[keyid] for d, exp in pools if exp > now and keyid in d and d[keyid].usable(now)), None)
+        return None if k is None else ResolvedKey(k.key, False, attributed=False)
+
+    def _resolve_own(self, keyid, operator, now):
         if operator is None:
             return None
         if operator in self.allowlist:
@@ -944,8 +963,8 @@ class Verifier:
         if stop is not None:
             return stop
 
-        res.outcome = Outcome.VERIFIED if resolved.trusted else Outcome.SIGNED_UNTRUSTED
-        res.reason, res.operator = "ok", res.claimed_agent
+        res.outcome = Outcome.VERIFIED if resolved.trusted and resolved.attributed else Outcome.SIGNED_UNTRUSTED
+        res.reason, res.operator = "ok", res.claimed_agent if resolved.attributed else None  # spec 3.3
         return res
 
     @staticmethod

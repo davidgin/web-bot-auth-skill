@@ -5,6 +5,7 @@ import base64
 import dataclasses
 import functools
 import json
+import re
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -80,14 +81,16 @@ class Fixture(unittest.TestCase):
 
     # SC-005: every directory attack test checks these after each request.
     def assertFetchedSubset(self, fetched, resolver):
-        self.assertLessEqual(set(fetched), set(resolver._fetch_urls.values()))
+        self.assertLessEqual(set(fetched), set(getattr(resolver, "_fetch_urls", {}).values()))
 
-    def assertNotMisattributed(self, result, resolver):
-        # T9 adds the ResolvedKey.attributed check; until then membership is the evidence.
-        if result.operator is not None:
+    def assertNotMisattributed(self, result, resolver, resolved=None):
+        # ``resolved`` is the ResolvedKey behind ``result``, when the test captured it.
+        if resolved is not None and not resolved.attributed:  # spec 3.3: no URL, no operator or trust
+            self.assertEqual((result.operator, result.outcome == Outcome.VERIFIED), (None, False))
+        if result.operator is not None:  # the operator's own resolution must hold the key
             static = getattr(resolver, "_keys", None)
             keys = static.get(result.operator, {}) if static is not None \
-                else resolver._cache.get(result.operator, ({},))[0]
+                else getattr(resolver, "_cache", {}).get(result.operator, ({},))[0]
             self.assertIn(result.keyid, keys, f"{result.keyid} credited to {result.operator}")
 
 
@@ -465,6 +468,13 @@ class DirectoryConfiguration(Fixture):
         res.allowlist.update([AGENT + "/k"])
         self.assertEqual(res.allowlist, {AGENT_ID, AGENT + "/k"})
 
+    def test_static_keys_normalizing_to_one_identifier_rejected(self):  # parity with FR-008
+        other = {"keys": [public_jwk(Ed25519PrivateKey.generate())]}
+        with self.assertRaisesRegex(ValueError, re.escape(AGENT + "/k")):
+            StaticKeyResolver({AGENT + "/k": self.jwks, AGENT + "/./k?v=1": other})
+        res = StaticKeyResolver({AGENT + "/k": self.jwks, AGENT + "/j": other, None: other})
+        self.assertIsNotNone(res.resolve(jwk_thumbprint(public_jwk(self.key)), AGENT + "/k", NOW))
+
     def test_invalid_directory_configuration_rejected(self):
         for entry in ("", "agent.example", "http://agent.example/keys", "https:///keys",
                       AGENT + "/keys#fragment", "https://user@agent.example/keys",
@@ -523,6 +533,10 @@ class DirectorySecurity(Fixture):
                                     static)
         with self.assertRaises(AssertionError):
             self.assertFetchedSubset([self.evil_url], self.resolver)
+        pooled = web_bot_auth.ResolvedKey(self.attacker.public_key(), False, attributed=False)
+        for bad in (dataclasses.replace(forged, operator=None), forged):
+            with self.assertRaises(AssertionError):
+                self.assertNotMisattributed(bad, StaticKeyResolver({None: self.jwks}), pooled)
 
     def test_forged_request_cannot_choose_directory(self):
         self.warm()
@@ -1074,54 +1088,209 @@ class DirectoryUnavailableFlag(Fixture):
 
 
 class DirectoryTrust(Fixture):
+    """Trust, removal and redistributed keys (FR-014, FR-021, spec section 3.7); SC-005 in every test."""
+    LIST = "https://lists.example/bots.json"
+
+    def setUp(self):
+        super().setUp()
+        self.fetched = []
+        self.kid = jwk_thumbprint(public_jwk(self.key))
+        self.other = {"keys": [public_jwk(Ed25519PrivateKey.generate())]}
+
+    def directory(self, *bodies, ttl=600, **kw):
+        """Allowlist [AGENT]; fetches serve ``bodies`` in turn (the last repeats); None fails."""
+        queue = list(bodies)
+
+        def fetch(url):
+            self.fetched.append(url)
+            body = queue.pop(0) if len(queue) > 1 else queue[0]
+            if body is None:
+                raise TimeoutError("down")
+            return json.dumps(body).encode(), ttl
+        return DirectoryKeyResolver([AGENT], fetch=fetch, **kw)
+
+    def verify(self, res, req, now=NOW):
+        seen, resolve = [], res.resolve
+        res.resolve = lambda *a: seen.append(resolve(*a)) or seen[-1]
+        try:
+            result = Verifier(res, clock=lambda: now).verify(req)
+        finally:
+            del res.resolve
+        self.assertFetchedSubset(self.fetched, res)
+        self.assertNotMisattributed(result, res, seen[-1] if seen else None)
+        return result
+
+    def signed_at(self, now, **kw):
+        return self.signed(created=now - 1, expires=now + 59, **kw)
+
     def test_removed_operator_cached_key_is_untrusted(self):
-        calls = []
-        res = DirectoryKeyResolver([AGENT], fetch=lambda url: (
-            calls.append(url) or json.dumps(self.jwks).encode(), 600))
-        verifier = Verifier(res, clock=clock)
+        res = self.directory(self.jwks)
         request = self.signed()
-        self.assertEqual(verifier.verify(request).outcome, Outcome.VERIFIED)
+        self.assertEqual(self.verify(res, request).outcome, Outcome.VERIFIED)
         res.allowlist.discard(AGENT_ID)
         self.assertFalse(res.is_allowlisted(AGENT_ID))
-        self.assertEqual(verifier.verify(request).outcome, Outcome.SIGNED_UNTRUSTED)
-        self.assertEqual(calls, [AGENT + WELL_KNOWN_DIRECTORY])
+        self.assertEqual(self.verify(res, request).outcome, Outcome.SIGNED_UNTRUSTED)
         res.allowlist.add(AGENT_ID)
-        self.assertEqual(verifier.verify(request).outcome, Outcome.VERIFIED)
-        self.assertEqual(calls, [AGENT + WELL_KNOWN_DIRECTORY])
+        self.assertEqual(self.verify(res, request).outcome, Outcome.VERIFIED)
+        self.assertEqual(self.fetched, [AGENT + WELL_KNOWN_DIRECTORY])
 
     def test_removed_operator_expired_cache_cannot_be_used(self):
-        res = DirectoryKeyResolver([AGENT], fetch=lambda url: (json.dumps(self.jwks).encode(), 300))
-        kid = jwk_thumbprint(public_jwk(self.key))
-        self.assertTrue(res.resolve(kid, AGENT_ID, NOW).trusted)
+        res = self.directory(self.jwks, ttl=300)
+        self.assertTrue(res.resolve(self.kid, AGENT_ID, NOW).trusted)
         res.allowlist.clear()
-        self.assertFalse(res.resolve(kid, AGENT_ID, NOW + 299.999).trusted)
-        self.assertIsNone(res.resolve(kid, AGENT_ID, NOW + 300))
+        self.assertFalse(res.resolve(self.kid, AGENT_ID, NOW + 299.999).trusted)
+        self.assertIsNone(res.resolve(self.kid, AGENT_ID, NOW + 300))
+        self.assertFetchedSubset(self.fetched, res)
 
     def test_operator_removed_during_fetch_is_not_trusted(self):
         def fetch(url):
+            self.fetched.append(url)
             res.allowlist.discard(AGENT_ID)
             return json.dumps(self.jwks).encode(), 600
 
         res = DirectoryKeyResolver([AGENT], fetch=fetch)
-        result = Verifier(res, clock=clock).verify(self.signed())
-        self.assertEqual(result.outcome, Outcome.SIGNED_UNTRUSTED)
+        self.assertEqual(self.verify(res, self.signed()).outcome, Outcome.SIGNED_UNTRUSTED)
 
     def test_removed_operator_with_expired_cache_is_unknown_not_unavailable(self):
-        res = DirectoryKeyResolver([AGENT], fetch=lambda url: (json.dumps(self.jwks).encode(), 300))
-        kid = jwk_thumbprint(public_jwk(self.key))
-        self.assertTrue(res.resolve(kid, AGENT_ID, NOW).trusted)
+        res = self.directory(self.jwks, ttl=300)
+        self.assertTrue(res.resolve(self.kid, AGENT_ID, NOW).trusted)
         res.allowlist.discard(AGENT_ID)
         self.assertFalse(res.directory_unavailable(AGENT_ID, NOW + 300))
-        r = Verifier(res, clock=lambda: NOW + 300).verify(self.signed(created=NOW + 299, expires=NOW + 359))
+        r = self.verify(res, self.signed_at(NOW + 300), NOW + 300)
         self.assertEqual((r.outcome, r.reason), (Outcome.UNKNOWN_OPERATOR, "no key for this operator"))
 
     def test_background_directory_stays_untrusted_and_expires(self):
-        res = DirectoryKeyResolver([])
-        res.add_untrusted_directory(AGENT, self.jwks, ttl=60, now=NOW)
-        kid = jwk_thumbprint(public_jwk(self.key))
-        self.assertFalse(res.resolve(kid, AGENT_ID, NOW).trusted)
-        self.assertIsNone(res.resolve("unknown", AGENT_ID, NOW))
-        self.assertIsNone(res.resolve(kid, AGENT_ID, NOW + 60))
+        # SC-008: re-specified for -01; keys carry no URL unless the caller fetched them.
+        for fetched, operator in ((False, None), (True, AGENT_ID)):
+            with self.subTest(fetched=fetched):
+                res = DirectoryKeyResolver([], fetch=self.fetched.append)
+                res.add_untrusted_directory(AGENT, self.jwks, ttl=60, now=NOW, fetched=fetched)
+                hit = res.resolve(self.kid, AGENT_ID, NOW)
+                self.assertEqual((hit.trusted, hit.attributed), (False, fetched))
+                self.assertIsNone(res.resolve("unknown", AGENT_ID, NOW))
+                self.assertIsNone(res.resolve(self.kid, AGENT_ID, NOW + 60))
+                r = self.verify(res, self.signed())
+                self.assertEqual((r.outcome, r.operator), (Outcome.SIGNED_UNTRUSTED, operator))
+                self.assertEqual(self.fetched, [])
+
+    def test_redistributed_list_carries_no_url(self):  # scenario 9
+        res = DirectoryKeyResolver([], fetch=self.fetched.append)
+        res.add_untrusted_directory(AGENT, self.jwks, now=NOW)
+        r = self.verify(res, self.signed())
+        self.assertEqual((r.outcome, r.operator, r.keyid, r.claimed_agent),
+                         (Outcome.SIGNED_UNTRUSTED, None, self.kid, AGENT_ID))
+
+    def test_fetched_list_is_credited_to_its_url(self):
+        res = DirectoryKeyResolver([], fetch=self.fetched.append)
+        res.add_untrusted_directory(AGENT + "?v=2", self.jwks, now=NOW, fetched=True)
+        r = self.verify(res, self.signed())
+        self.assertEqual((r.outcome, r.operator), (Outcome.SIGNED_UNTRUSTED, AGENT_ID))
+
+    def test_unattributed_keys_verify_for_another_or_no_url_never_trusted(self):
+        res = self.directory(self.jwks)
+        res.add_untrusted_directory(self.LIST, self.jwks, now=NOW)
+        for req in (self.signed(agent="https://stranger.example"),
+                    hand_signed(self.key, None, '"@authority"'),
+                    hand_signed(self.key, f'agent2="{AGENT}"', '"@authority" "signature-agent";key="agent2"')):
+            r = self.verify(res, req)
+            self.assertEqual((r.outcome, r.operator), (Outcome.SIGNED_UNTRUSTED, None), r.reason)
+        self.assertEqual(self.fetched, [])
+
+    def test_removal_wins_over_unattributed_pool(self):  # scenario 12, FR-021
+        res = self.directory(self.other)
+        res.add_untrusted_directory(self.LIST, self.jwks, now=NOW)
+        r = self.verify(res, self.signed())
+        self.assertEqual((r.outcome, r.reason, r.operator),
+                         (Outcome.INVALID, "unknown keyid for allowlisted operator", None))
+
+    def test_unavailable_directory_falls_back_to_pool(self):  # scenario 12, second half
+        res = self.directory(None)
+        res.add_untrusted_directory(self.LIST, self.jwks, now=NOW)
+        r = self.verify(res, self.signed())
+        self.assertEqual((r.outcome, r.operator), (Outcome.SIGNED_UNTRUSTED, None), r.reason)
+        res = self.directory(self.other, ttl=300, refetch_interval=1000)  # warm, then expired
+        res.add_untrusted_directory(self.LIST, self.jwks, now=NOW)
+        self.assertEqual(self.verify(res, self.signed()).outcome, Outcome.INVALID)
+        r = self.verify(res, self.signed_at(NOW + 300), NOW + 300)  # refetch rate-limited
+        self.assertEqual((r.outcome, r.operator), (Outcome.SIGNED_UNTRUSTED, None), r.reason)
+        self.assertEqual(len(self.fetched), 2)
+
+    def test_refresh_without_key_is_not_undone_by_pool(self):
+        res = self.directory(self.jwks, self.other, ttl=300)
+        res.add_untrusted_directory(self.LIST, self.jwks, now=NOW)
+        self.assertEqual(self.verify(res, self.signed()).outcome, Outcome.VERIFIED)
+        r = self.verify(res, self.signed_at(NOW + 301), NOW + 301)
+        self.assertEqual((r.outcome, r.reason), (Outcome.INVALID, "unknown keyid for allowlisted operator"))
+        self.assertEqual(len(self.fetched), 2)
+
+    def test_pools_replace_per_source_and_expire_on_their_own_ttl(self):
+        res = DirectoryKeyResolver([], fetch=self.fetched.append)
+        new = {"keys": [public_jwk(Ed25519PrivateKey.generate())]}
+        new_kid = jwk_thumbprint(new["keys"][0])
+        res.add_untrusted_directory(self.LIST, self.jwks, ttl=60, now=NOW)
+        res.add_untrusted_directory(self.LIST, new, ttl=60, now=NOW)  # same source: replaced
+        self.assertIsNone(res.resolve(self.kid, None, NOW))
+        res.add_untrusted_directory("https://other.example/list", self.jwks, ttl=120, now=NOW)
+        for now, live in ((NOW + 59.999, {self.kid, new_kid}), (NOW + 60, {self.kid}),
+                          (NOW + 119.999, {self.kid}), (NOW + 120, set())):
+            got = {k for k in (self.kid, new_kid) if res.resolve(k, None, now) is not None}
+            self.assertEqual(got, live, now)
+        self.assertEqual(self.verify(res, self.signed()).outcome, Outcome.SIGNED_UNTRUSTED)
+        self.assertFetchedSubset(self.fetched, res)
+
+    def test_allowlisted_url_cannot_be_added(self):
+        res = self.directory(self.jwks)
+        for fetched in (False, True):
+            with self.subTest(fetched=fetched):
+                with self.assertRaises(ValueError):
+                    res.add_untrusted_directory(AGENT, self.jwks, now=NOW, fetched=fetched)
+        self.assertEqual(self.verify(res, self.signed()).outcome, Outcome.VERIFIED)
+
+    def test_concurrent_re_add_never_shows_a_mixed_or_missing_set(self):
+        res = DirectoryKeyResolver([], fetch=self.fetched.append)
+        extra = [public_jwk(Ed25519PrivateKey.generate()) for _ in range(2)]
+        sets = [{"keys": self.jwks["keys"] + [jwk]} for jwk in extra]
+        kids = [jwk_thumbprint(jwk) for jwk in extra]
+        res.add_untrusted_directory(self.LIST, sets[0], now=NOW)
+        start, errors = threading.Barrier(9), []
+
+        def reader():  # self.kid is in both sets, so a miss means a missing (partial) set
+            start.wait()
+            for _ in range(300):
+                hit = res.resolve(self.kid, None, NOW)
+                if hit is None or public_jwk(hit.key) != self.jwks["keys"][0]:
+                    errors.append(hit)
+
+        def writer():
+            start.wait()
+            for i in range(300):
+                res.add_untrusted_directory(self.LIST, sets[i % 2], now=NOW)
+
+        threads = [threading.Thread(target=reader) for _ in range(8)] + [threading.Thread(target=writer)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        self.assertEqual([res.resolve(k, None, NOW) is not None for k in kids], [False, True])  # not merged
+        self.assertEqual(self.verify(res, self.signed()).outcome, Outcome.SIGNED_UNTRUSTED)
+
+    def test_unattributed_resolved_key_forces_untrusted_and_no_operator(self):
+        class Unattributed(StaticKeyResolver):
+            def resolve(self, keyid, operator, now):
+                r = super().resolve(keyid, operator, now)
+                return r and web_bot_auth.ResolvedKey(r.key, True, attributed=False)
+
+        r = self.verify(Unattributed({AGENT: self.jwks}), self.signed())
+        self.assertEqual((r.outcome, r.operator), (Outcome.SIGNED_UNTRUSTED, None))
+
+    def test_ignored_member_with_directory_resolver_is_unknown_operator(self):  # scenario 7, R18
+        res = self.directory(self.jwks)
+        req = hand_signed(self.key, f'agent2="{AGENT}"', '"@authority" "signature-agent";key="agent2"', "sig2")
+        r = self.verify(res, req)
+        self.assertEqual((r.outcome, r.reason, r.operator, r.claimed_agent),
+                         (Outcome.UNKNOWN_OPERATOR, "no key for this operator", None, None))
+        self.assertEqual(self.fetched, [])
 
 
 class Conformance(unittest.TestCase):
