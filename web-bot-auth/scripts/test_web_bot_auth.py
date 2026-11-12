@@ -69,6 +69,11 @@ class Accepts(Fixture):
         self.assertEqual(r.outcome, Outcome.VERIFIED, r.reason)
         self.assertFalse(r.binds_request)
 
+    def test_target_uri_without_authority_verifies(self):
+        r = self.outcome(self.signed(components=("@method", "@target-uri", "signature-agent")))
+        self.assertEqual(r.outcome, Outcome.VERIFIED, r.reason)
+        self.assertTrue(r.binds_request)
+
     def test_no_nonce_verifies_but_is_unprotected(self):
         r = self.outcome(self.signed(nonce=None))
         self.assertEqual(r.outcome, Outcome.VERIFIED, r.reason)
@@ -110,6 +115,15 @@ class Rejects(Fixture):
     def test_host_swap(self):
         req = self.signed()
         self.assertOutcome(Request("GET", "https://other.example/items/42", req._headers), Outcome.INVALID)
+
+    def test_target_uri_host_swap_is_invalid(self):
+        req = self.signed(components=("@method", "@target-uri", "signature-agent"))
+        self.assertOutcome(Request("GET", "https://other.example/items/42", req._headers), Outcome.INVALID)
+
+    def test_neither_authority_nor_target_uri_is_invalid(self):
+        req = self.signed(components=("@method", "@path", "signature-agent"))
+        r = self.assertOutcome(req, Outcome.INVALID)
+        self.assertEqual(r.reason, "@authority or @target-uri must be covered")
 
     def test_signature_agent_swap(self):
         req = self.signed()

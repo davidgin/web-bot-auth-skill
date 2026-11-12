@@ -887,8 +887,8 @@ class Verifier:
 
     def _identity(self, req: Request, covered: InnerList, label: str, res: Result) -> Optional[Result]:
         names = {c.value for c in covered.items}
-        if "@authority" not in names:
-            res.reason = "@authority must be covered"; return res
+        if not names & {"@authority", "@target-uri"}:
+            res.reason = "@authority or @target-uri must be covered"; return res
 
         # Operator identity from Signature-Agent (must be signed if present).
         operator = None
