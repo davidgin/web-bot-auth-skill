@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 from web_bot_auth import (
-    DirectoryKeyResolver, InMemoryNonceStore, NonceStoreError, Outcome, Policy,
+    DirectoryKeyResolver, InMemoryNonceStore, content_digest_matches, NonceStoreError, Outcome, Policy,
     Request, StaticKeyResolver, Verifier, jwk_thumbprint, parse_dictionary,
     public_jwk, sign_request, signature_base, WELL_KNOWN_DIRECTORY,
 )
@@ -846,6 +846,96 @@ MC4CAQAwBQYDK2VwBCIEIJ+DYvh6SEqVTm50DFtMDoQikTmiCqirVv9mWG9qfSnF
             ';created=1618884473;keyid="test-key-ed25519"')["sig-b26"]
         base = signature_base(req, covered)
         key.public_key().verify(base64.b64decode(self.SIG), base)
+
+
+# -01 Appendix E headers, unwrapped per RFC 8792; module-level so later tasks reuse them.
+E_KEYID = "poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U"
+E_JWK = {"kty": "OKP", "crv": "Ed25519", "x": "JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs"}
+E_AGENT = "https://signature-agent.test"
+E21_HEADERS = [
+    ("Host", "example.com"),
+    ("Signature-Agent", 'sig2="https://signature-agent.test"'),
+    ("Signature-Input",
+     'sig2=("@authority" "signature-agent";key="sig2");created=1735689600;'
+     'keyid="poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U";alg="ed25519";expires=4889289600;'
+     'nonce="n9p433xm+NJ3ph3upfBIGmsuwHw387YV7Q/F+6BSpGCVjYCqQw6rznNA8PVVLySrAWsv0hQtFioQb6E1YsauiA==";'
+     'tag="web-bot-auth"'),
+    ("Signature", "sig2=:CGokAoY/FrPpyuzTe1Fb2kLTAH9Idw6qSFd1+D77r1firsMRCxeuLu5e6O+ek3zQgDMAzjiXtLVfqE00xnABCQ==:"),
+]
+E22_HEADERS = [
+    ("Host", "example.com"),
+    ("Signature-Agent", '"https://signature-agent.test"'),
+    ("Signature-Input",
+     'sig2=("@authority" "signature-agent");created=1735689600;'
+     'keyid="poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U";alg="ed25519";expires=1735693200;'
+     'nonce="e8N7S2MFd/qrd6T2R3tdfAuuANngKI7LFtKYI/vowzk4lAZYadIX6wW25MwG7DCT9RUKAJ0qVkU0mEeLElW1qg==";'
+     'tag="web-bot-auth"'),
+    ("Signature", "sig2=:jdq0SqOwHdyHr9+r5jw3iYZH6aNGKijYp/EstF4RQTQdi5N5YYKrD+mCT1HA1nZDsi6nJKuHxUi/5Syp3rLWBA==:"),
+]
+E11_HEADERS = [
+    ("Host", "example.com"),
+    ("Signature-Agent", 'sig2="https://signature-agent.test"'),
+    ("Signature-Input",
+     'sig2=("@authority" "signature-agent";key="sig2");created=1735689600;'
+     'keyid="oD0HwocPBSfpNy5W3bpJeyFGY_IQ_YpqxSjQ3Yd-CLA";alg="rsa-pss-sha512";expires=4889289600;'
+     'nonce="wcfPQPh7SzkvrIVvhD00vNk9PkxJNY2NVbYl2PVBB4zmUoluSwE7W6bPtF60QA3k8g06FU7PPCD+J58YofY1zg==";'
+     'tag="web-bot-auth"'),
+    ("Signature", "sig2=:iOCC:"),  # value is irrelevant: alg is rejected before any signature check
+]
+E12_HEADERS = [
+    ("Host", "example.com"),
+    ("Signature-Agent", '"https://signature-agent.test"'),
+    ("Signature-Input",
+     'sig2=("@authority" "signature-agent");created=1735689600;'
+     'keyid="oD0HwocPBSfpNy5W3bpJeyFGY_IQ_YpqxSjQ3Yd-CLA";alg="rsa-pss-sha512";expires=1735693200;'
+     'nonce="XSHtZVCThSIAksXsH9WBs6AtxtXC0eQGiIcUGSoJstFs8lAWakjhrfwzLhyjtme5iXMZvmFWqDEs6cT3Jf+BbQ==";'
+     'tag="web-bot-auth"'),
+    ("Signature", "sig2=:I1QW:"),
+]
+E23_BODY = (b'{"keys":[{"kty":"OKP","crv":"Ed25519","kid":"poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U",'
+            b'"x":"JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs","use":"sig"}]}')
+E23_DIGEST = "sha-256=:CADMT2aBdV/rqQr/NIru64ERQkCobVvllA4V0fLFDu0=:"
+
+
+class ConformanceDraft01(unittest.TestCase):
+    """draft-ietf-webbotauth-httpsig-protocol-01 Appendix E vectors."""
+
+    def verifier(self):
+        return Verifier(StaticKeyResolver({E_AGENT: {"keys": [E_JWK]}}),
+                        policy=Policy(max_age=10**10, max_lifetime=None), clock=lambda: 1735689600)
+
+    def check(self, headers):
+        return self.verifier().verify(Request("GET", "https://example.com/", headers))
+
+    def test_e21_dictionary_agent_verifies(self):
+        r = self.check(E21_HEADERS)
+        self.assertEqual(r.outcome, Outcome.VERIFIED, r.reason)
+        self.assertEqual(r.operator, E_AGENT)
+
+    def test_e22_legacy_string_verifies(self):
+        r = self.check(E22_HEADERS)
+        self.assertEqual(r.outcome, Outcome.VERIFIED, r.reason)
+        self.assertEqual(r.operator, E_AGENT)
+
+    def test_e1_rsa_vectors_are_unsupported(self):
+        for name, headers in (("E.1.1", E11_HEADERS), ("E.1.2", E12_HEADERS)):
+            with self.subTest(name):
+                r = self.check(headers)
+                self.assertEqual(r.outcome, Outcome.INVALID)
+                self.assertEqual(r.reason, "unsupported alg 'rsa-pss-sha512'")
+
+    def test_created_beyond_skew_is_future_not_expired(self):
+        # Pins the created > now + skew branch of _check_times to its own reason.
+        v = Verifier(StaticKeyResolver({E_AGENT: {"keys": [E_JWK]}}),
+                     policy=Policy(max_age=10**10, max_lifetime=None, clock_skew=5),
+                     clock=lambda: 1735689600 - 6)
+        r = v.verify(Request("GET", "https://example.com/", E21_HEADERS))
+        self.assertEqual((r.outcome, r.reason), (Outcome.INVALID, "created is in the future"))
+
+    def test_e23_content_digest_matches_body(self):
+        self.assertTrue(content_digest_matches(E23_DIGEST, E23_BODY))
+        changed = E23_BODY[:-1] + b"~"
+        self.assertFalse(content_digest_matches(E23_DIGEST, changed))
 
 
 class Vectors(unittest.TestCase):
