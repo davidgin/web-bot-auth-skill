@@ -52,9 +52,7 @@ WELL_KNOWN_DIRECTORY = "/.well-known/http-message-signatures-directory"
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
-# --------------------------------------------------------------------------
-# RFC 8941 structured fields (subset)
-# --------------------------------------------------------------------------
+# --- RFC 8941 structured fields (subset) ---
 
 class StructuredFieldError(ValueError):
     pass
@@ -317,9 +315,7 @@ def serialize_dictionary(d: dict) -> str:
     return ", ".join(parts)
 
 
-# --------------------------------------------------------------------------
-# Requests and signature base (RFC 9421)
-# --------------------------------------------------------------------------
+# --- Requests and signature base (RFC 9421) ---
 
 @dataclass
 class Request:
@@ -435,9 +431,7 @@ def signature_base(req: Request, covered: InnerList) -> bytes:
     return "\n".join(lines).encode("ascii", errors="strict")
 
 
-# --------------------------------------------------------------------------
-# Content-Digest (RFC 9530)
-# --------------------------------------------------------------------------
+# --- Content-Digest (RFC 9530) ---
 
 _DIGESTS = {"sha-256": hashlib.sha256, "sha-512": hashlib.sha512}
 
@@ -461,9 +455,7 @@ def content_digest_matches(header_value: str, body: bytes) -> bool:
     return checked
 
 
-# --------------------------------------------------------------------------
-# Keys
-# --------------------------------------------------------------------------
+# --- Keys ---
 
 def _b64url(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
@@ -543,10 +535,8 @@ class ResolvedKey:
 
 
 class KeyResolver(Protocol):
-    # Optional extra, looked up with getattr and read only after resolve() returned
-    # None: ``directory_unavailable(operator, now) -> bool``. It must be side-effect
-    # free. True turns that failure into UNKNOWN_OPERATOR ("key directory
-    # unavailable") instead of INVALID; it can never yield a key or trust.
+    # Optional ``directory_unavailable(operator, now) -> bool``: side-effect free, read only after
+    # resolve() returned None; True maps that miss to UNKNOWN_OPERATOR. Never yields a key or trust.
     def resolve(self, keyid: str, operator: Optional[str], now: float) -> Optional[ResolvedKey]: ...
 
     def is_allowlisted(self, operator: Optional[str]) -> bool: ...
@@ -652,11 +642,9 @@ class DirectoryKeyResolver:
         return ResolvedKey(k.key, trusted) if k is not None and k.usable(now) else None
 
     def directory_unavailable(self, operator, now) -> bool:
-        """True if an allowlisted operator has no fresh cached directory.
+        """True if an allowlisted operator has no fresh cached directory (read-only, no fetch).
 
-        Read-only: no fetch, no mutation. Called only after resolve() found no
-        key, to tell a transient outage from a genuinely unknown key. An expired
-        copy cannot rule out a rotated key we failed to fetch.
+        Called only after resolve() found no key; see references/policy-decisions.md section 6.
         """
         if operator not in self.allowlist:
             return False
@@ -702,9 +690,7 @@ def safe_fetch_directory(url: str, timeout: float = 2.0, max_bytes: int = 65536)
         return body, max_age
 
 
-# --------------------------------------------------------------------------
-# Nonce stores
-# --------------------------------------------------------------------------
+# --- Nonce stores ---
 
 class NonceStoreError(RuntimeError):
     pass
@@ -739,9 +725,7 @@ class InMemoryNonceStore:
             return True
 
 
-# --------------------------------------------------------------------------
-# Verification
-# --------------------------------------------------------------------------
+# --- Verification ---
 
 class Outcome(str, Enum):
     UNSIGNED = "unsigned"                  # no web-bot-auth signature: score as normal traffic
@@ -804,7 +788,59 @@ class Verifier:
             return Result(Outcome.INVALID, f"malformed: {e}")
 
     def _verify(self, req: Request) -> Result:
-        p = self.policy
+        selected = self._select(req)
+        if isinstance(selected, Result):
+            return selected
+        label, covered, signature = selected
+
+        params = covered.params
+        keyid, created, expires = params.get("keyid"), params.get("created"), params.get("expires")
+        nonce = params.get("nonce")
+        res = Result(Outcome.INVALID, label=label, keyid=keyid if isinstance(keyid, str) else None)
+        # Cheap checks before any crypto or key fetching.
+        now = self.clock()
+        stop = (self._check_params(covered, res) or self._check_times(created, expires, now, res)
+                or self._identity(req, covered, label, res))
+        if stop is not None:
+            return stop
+
+        names = {c.value for c in covered.items}
+        if "content-digest" in names:
+            cd = req.header("content-digest")
+            if cd is None or not content_digest_matches(cd, req.body):
+                res.reason = "content-digest does not match body"; return res
+
+        resolved = self._resolve_key(res, keyid, res.operator, now)
+        if resolved is None:
+            return res
+
+        base = signature_base(req, covered)
+        try:
+            resolved.key.verify(signature, base)
+        except InvalidSignature:
+            res.reason = "signature does not verify"; return res
+
+        # Coverage: is this signature bound to this specific request?
+        res.binds_request = (
+            "@method" in names
+            and bool(names & _PATH_COVERING)
+            and (not urlsplit(req.url).query or bool(names & _QUERY_COVERING))
+            and (not req.body or "content-digest" in names)
+        )
+        if self.policy.require_binding and not res.binds_request:
+            res.reason = "signature does not cover method, path, query and body"; return res
+
+        stop = self._check_nonce(req, keyid, nonce, created, expires, now, res)
+        if stop is not None:
+            return stop
+
+        res.outcome = Outcome.VERIFIED if resolved.trusted else Outcome.SIGNED_UNTRUSTED
+        res.reason = "ok"
+        return res
+
+    @staticmethod
+    def _select(req: Request):
+        """Return ``(label, covered, signature)``, or a Result when nothing is left to verify."""
         sig_header, input_header = req.header("signature"), req.header("signature-input")
         if sig_header is None and input_header is None:
             return Result(Outcome.UNSIGNED, "no signature")
@@ -816,16 +852,16 @@ class Verifier:
                       if isinstance(v, InnerList) and v.params.get("tag") == TAG), None)
         if label is None:
             return Result(Outcome.UNSIGNED, "no web-bot-auth signature")
-        covered = inputs[label]
         sig_member = sigs.get(label)
         if not isinstance(sig_member, Item) or not isinstance(sig_member.value, bytes):
             return Result(Outcome.INVALID, "no signature value for label", label=label)
-        signature = sig_member.value
+        return label, inputs[label], sig_member.value
 
+    @staticmethod
+    def _check_params(covered: InnerList, res: Result) -> Optional[Result]:
         params = covered.params
         keyid, created, expires = params.get("keyid"), params.get("created"), params.get("expires")
         nonce, alg = params.get("nonce"), params.get("alg")
-        res = Result(Outcome.INVALID, label=label, keyid=keyid if isinstance(keyid, str) else None)
         if not isinstance(keyid, str) or isinstance(keyid, Token):
             res.reason = "keyid missing"; return res
         if not isinstance(created, int) or isinstance(created, bool) \
@@ -835,9 +871,10 @@ class Verifier:
             res.reason = f"unsupported alg {alg!r}"; return res
         if nonce is not None and (not isinstance(nonce, str) or isinstance(nonce, Token)):
             res.reason = "nonce must be a string"; return res
+        return None
 
-        # Cheap checks before any crypto or key fetching.
-        now = self.clock()
+    def _check_times(self, created: int, expires: int, now: float, res: Result) -> Optional[Result]:
+        p = self.policy
         if created > now + p.clock_skew:
             res.reason = "created is in the future"; return res
         if expires <= created:
@@ -846,7 +883,9 @@ class Verifier:
             res.reason = "validity period too long"; return res
         if now > expires + p.clock_skew or now - created > p.max_age + p.clock_skew:
             res.outcome, res.reason = Outcome.EXPIRED, "signature expired"; return res
+        return None
 
+    def _identity(self, req: Request, covered: InnerList, label: str, res: Result) -> Optional[Result]:
         names = {c.value for c in covered.items}
         if "@authority" not in names:
             res.reason = "@authority must be covered"; return res
@@ -866,36 +905,12 @@ class Verifier:
             except ValueError as e:
                 res.reason = str(e); return res
         res.operator = operator
+        return None
 
-        # Body integrity, if claimed.
-        if "content-digest" in names:
-            cd = req.header("content-digest")
-            if cd is None or not content_digest_matches(cd, req.body):
-                res.reason = "content-digest does not match body"; return res
-
-        resolved = self._resolve_key(res, keyid, operator, now)
-        if resolved is None:
-            return res
-
-        base = signature_base(req, covered)
-        try:
-            resolved.key.verify(signature, base)
-        except InvalidSignature:
-            res.reason = "signature does not verify"; return res
-
-        # Coverage: is this signature bound to this specific request?
-        u = urlsplit(req.url)
-        res.binds_request = (
-            "@method" in names
-            and bool(names & _PATH_COVERING)
-            and (not u.query or bool(names & _QUERY_COVERING))
-            and (not req.body or "content-digest" in names)
-        )
-        if p.require_binding and not res.binds_request:
-            res.reason = "signature does not cover method, path, query and body"; return res
-
-        # Replay: record the nonce only after the signature verifies, so
-        # unsigned junk cannot fill the store.
+    def _check_nonce(self, req: Request, keyid: str, nonce: Optional[str], created: int,
+                     expires: int, now: float, res: Result) -> Optional[Result]:
+        # Run only after the signature verifies, so unsigned junk cannot fill the store.
+        p = self.policy
         if nonce is None:
             if p.require_nonce:
                 res.reason = "nonce required"; return res
@@ -912,10 +927,7 @@ class Verifier:
             if fresh is False:
                 res.outcome, res.reason = Outcome.REPLAY, "nonce already used"; return res
             res.replay_protected = fresh is True
-
-        res.outcome = Outcome.VERIFIED if resolved.trusted else Outcome.SIGNED_UNTRUSTED
-        res.reason = "ok"
-        return res
+        return None
 
     def _resolve_key(self, res: Result, keyid: str, operator, now: float) -> Optional[ResolvedKey]:
         """Return the key, or None after setting ``res.outcome``/``res.reason``."""
@@ -957,9 +969,7 @@ class Verifier:
         return None
 
 
-# --------------------------------------------------------------------------
-# Signing (for tests, examples and agent operators)
-# --------------------------------------------------------------------------
+# --- Signing (for tests, examples and agent operators) ---
 
 def sign_request(req: Request, private_key: Ed25519PrivateKey, *,
                  components: Sequence[str] = ("@method", "@authority", "@path", "signature-agent"),
