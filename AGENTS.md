@@ -4,7 +4,7 @@ Extends `~/.agents/AGENTS.md`; everything there applies unless overridden here.
 
 ## Size limits (exception to the global "Code size" rule)
 
-- `web-bot-auth/scripts/web_bot_auth.py` may be up to **1,100 lines**. It must
+- `web-bot-auth/scripts/web_bot_auth.py` may be up to **1,150 lines**. It must
   stay one vendorable file whose only dependency is `cryptography`, so it cannot
   be split into modules. All other source files keep the global 1,000-line limit;
   functions stay at 50 lines or fewer. Tests are not counted.

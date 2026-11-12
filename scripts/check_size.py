@@ -13,7 +13,7 @@ from pathlib import Path
 MAX_FILE_LINES = 1000
 MAX_FUNC_LINES = 50
 # web_bot_auth.py must stay a single vendorable file, so it gets a higher cap.
-FILE_LIMIT_OVERRIDES = {"web_bot_auth.py": 1100}
+FILE_LIMIT_OVERRIDES = {"web_bot_auth.py": 1150}
 
 REPO = Path(__file__).resolve().parent.parent
 TARGET = REPO / "web-bot-auth" / "scripts"

@@ -25,7 +25,7 @@ The skill bundles:
 
 ## Spec status
 
-Web Bot Auth is an IETF Internet-Draft, not a standard. This skill targets [`draft-meunier-web-bot-auth-architecture-05`](https://datatracker.ietf.org/doc/draft-meunier-web-bot-auth-architecture/). It also accepts the legacy quoted-string `Signature-Agent` form that many deployed agents still send. Expect changes as the draft evolves.
+Web Bot Auth is an IETF Internet-Draft, not a standard. As of 0.2.0 this skill targets [`draft-ietf-webbotauth-httpsig-protocol-01`](https://datatracker.ietf.org/doc/draft-ietf-webbotauth-httpsig-protocol/); see the [CHANGELOG](CHANGELOG.md) for what changed from the earlier target. Expect changes as the draft evolves.
 
 ## Install
 
@@ -40,11 +40,12 @@ Then ask something like: *"Add Web Bot Auth verification to this FastAPI app"* o
 ## Using the verifier directly
 
 ```python
-from web_bot_auth import (SAFE_METHODS, DirectoryKeyResolver, Outcome, RedisNonceStore,
-                          Request, Verifier)
+from web_bot_auth import SAFE_METHODS, DirectoryKeyResolver, Outcome, Request, Verifier
 
+# RedisNonceStore is not part of web_bot_auth.py: copy the snippet from
+# web-bot-auth/references/nonce-stores.md into your application.
 verifier = Verifier(
-    keys=DirectoryKeyResolver(allowlist=["https://agent.example"]),
+    keys=DirectoryKeyResolver(allowlist=["https://agent.example/"]),
     nonces=RedisNonceStore(redis_client),
 )
 result = verifier.verify(Request(method, absolute_url, header_pairs, raw_body))
