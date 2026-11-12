@@ -15,10 +15,11 @@ import json
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from web_bot_auth import (InMemoryNonceStore, Policy, Request, StaticKeyResolver,
-                          Verifier, public_jwk, sign_request)
+                          Verifier, normalize_agent_url, public_jwk, sign_request)
 
 NOW = 1_800_000_000
 AGENT = "https://agent.example"
+AGENT_ID = normalize_agent_url(AGENT)  # resolvers and trusted_keys are keyed by identifier
 NONCE = "bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U="
 # TEST ONLY. Deterministic keys so vectors are reproducible; never use in production.
 KEY = Ed25519PrivateKey.from_private_bytes(hashlib.sha256(b"web-bot-auth test key").digest())
@@ -80,20 +81,20 @@ def public_kid(k):
 def build():
     vectors = []
     for name, r, policy in cases():
-        v = Verifier(StaticKeyResolver({AGENT: {"keys": [public_jwk(KEY)]}}, allow_test_keys=True),
+        v = Verifier(StaticKeyResolver({AGENT_ID: {"keys": [public_jwk(KEY)]}}, allow_test_keys=True),
                      InMemoryNonceStore(clock=lambda: NOW), Policy(**policy), clock=lambda: NOW)
         res = v.verify(r)
         vectors.append(vector(name, r, policy, res))
     # Replay: the same request twice against one nonce store.
     r = req()
-    v = Verifier(StaticKeyResolver({AGENT: {"keys": [public_jwk(KEY)]}}, allow_test_keys=True),
+    v = Verifier(StaticKeyResolver({AGENT_ID: {"keys": [public_jwk(KEY)]}}, allow_test_keys=True),
                  InMemoryNonceStore(clock=lambda: NOW), clock=lambda: NOW)
     for name in ("replay_first", "replay_second"):
         vectors.append(vector(name, r, {}, v.verify(r), sequence="replay"))
     return {
         "description": "Web Bot Auth verifier vectors. TEST KEYS ONLY: their thumbprints are on the verifier denylist, so ports must enable their equivalent of allow_test_keys=True to run these vectors. Flags are given only for accepted outcomes.",
         "now": NOW,
-        "trusted_keys": {AGENT: {"keys": [public_jwk(KEY)]}},
+        "trusted_keys": {AGENT_ID: {"keys": [public_jwk(KEY)]}},
         "default_policy": {"max_age": 300, "max_lifetime": 86400, "clock_skew": 5,
                            "min_nonce_length": 16},
         "vectors": vectors,

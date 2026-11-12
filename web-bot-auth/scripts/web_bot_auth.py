@@ -8,8 +8,8 @@ Implements, for requests:
   * RFC 8037 / RFC 7638 JWK thumbprints for Ed25519 keys
   * Replay protection with a pluggable nonce store
 
-Targets draft-meunier-web-bot-auth-architecture-05 and also accepts the legacy
-sf-string form of Signature-Agent that many deployed agents still send.
+Targets draft-ietf-webbotauth-httpsig-protocol-01; an operator is identified by its
+normalized Signature-Agent URL. Deviation: a bare-origin URL fetches the well-known directory.
 
 Single file, one dependency (``cryptography``). Copy it into a project as-is and
 keep this header; write a thin adapter from your framework's request object to
@@ -23,13 +23,14 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import re
 import socket
 import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Iterable, Mapping, Optional, Protocol, Sequence, Union
+from typing import Callable, Iterable, Mapping, Optional, Protocol, Sequence, Tuple, Union
 from urllib.parse import urlsplit
 
 from cryptography.exceptions import InvalidSignature
@@ -44,7 +45,7 @@ __all__ = [
     "NonceStore", "InMemoryNonceStore", "NonceStoreError",
     "KeyResolver", "ResolvedKey", "StaticKeyResolver", "DirectoryKeyResolver",
     "jwk_thumbprint", "public_jwk", "safe_fetch_directory", "sign_request",
-    "Token", "StructuredFieldError", "TEST_KEY_THUMBPRINTS",
+    "Token", "StructuredFieldError", "TEST_KEY_THUMBPRINTS", "normalize_agent_url",
 ]
 
 TAG = "web-bot-auth"
@@ -535,21 +536,100 @@ def parse_directory(data: Union[bytes, str, Mapping], max_keys: int = 64,
     return out
 
 
-def normalize_origin(url: str) -> str:
-    u = urlsplit(url)
-    if u.scheme.lower() != "https" or not u.hostname:
-        raise ValueError("operator must be an https URL")
-    return "https://" + _authority(u)
+_UNRESERVED = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+_PCHAR = _UNRESERVED | set("!$&'()*+,;=:@%")
+_URL_CHARS = _PCHAR | set("/?[]")  # RFC 3986 characters; rejects "\\", which WHATWG reads as "/"
 
 
-def directory_url(signature_agent: str) -> str:
-    """Resolve a server-configured allowlist entry, never a request header."""
-    u = urlsplit(signature_agent)
-    origin = normalize_origin(signature_agent)
-    if u.fragment or u.username is not None or u.password is not None:
-        raise ValueError("directory URL must not contain a fragment or userinfo")
-    path = u.path if u.path and u.path != "/" else WELL_KNOWN_DIRECTORY
-    return origin + path + ("?" + u.query if u.query else "")
+def _pct(text: str, allowed: frozenset) -> str:
+    """RFC 3986 6.2.2.1-2: decode unreserved octets, uppercase the hex of the rest."""
+    if not set(text) <= allowed or re.search("%(?![0-9A-Fa-f]{2})", text):
+        raise ValueError("character or percent-encoding not allowed here in agent URL")
+    return re.sub("%([0-9A-Fa-f]{2})", lambda m: chr(int(m[1], 16)) if chr(int(m[1], 16)) in _UNRESERVED
+                  else "%" + m[1].upper(), text)
+
+
+def _remove_dot_segments(path: str) -> str:
+    """RFC 3986 5.2.4 for an absolute (or empty) path."""
+    segs, out = path.split("/")[1:], []
+    for i, seg in enumerate(segs):
+        if seg == "..":
+            out = out[:-1]
+        elif seg != ".":
+            out.append(seg)
+        if seg in (".", "..") and i == len(segs) - 1:
+            out.append("")
+    return "/" + "/".join(out)
+
+
+def _host_port(authority: str) -> Tuple[str, str]:
+    if authority.startswith("["):
+        end = authority.find("]") + 1
+        host, port = authority[:end].lower(), authority[end:]
+        try:  # zone identifiers ("%25") and IPvFuture are rejected
+            if not end or "%" in host:
+                raise ValueError
+            ipaddress.IPv6Address(host[1:-1])
+        except ValueError:
+            raise ValueError("bad IP literal in agent URL") from None
+    else:
+        host, colon, port = authority.partition(":")
+        host, port = _pct(host, _UNRESERVED | {"%"}).lower(), colon + port
+        if not host or "%" in host:
+            raise ValueError("agent URL host must be a non-empty name of unreserved characters")
+    digits = port[1:]  # parsed by hand: urlsplit().port differs across Python versions
+    if port[:1] not in ("", ":") or digits and (not set(digits) <= set(_DIGIT) or digits[0] == "0"
+                                                 or len(digits) > 5 or int(digits) > 65535):
+        raise ValueError("bad port in agent URL")
+    return host, "" if digits in ("", "443") else ":" + digits
+
+
+def _split_agent_url(url) -> Tuple[str, Optional[str]]:
+    """Return ``(identifier, normalized query or None)``; spec section 3.1, rules 1-11."""
+    if not isinstance(url, str) or not 0 < len(url) <= 2048 or not url.isascii():
+        raise ValueError("agent URL must be an ASCII string of 1 to 2048 characters")
+    if not set(url) <= _URL_CHARS or url[:8].lower() != "https://":  # also rejects any "#"
+        raise ValueError("agent URL must be an https URL of RFC 3986 characters, without fragment")
+    rest = url[8:]
+    cut = min([i for i in (rest.find("/"), rest.find("?")) if i >= 0] or [len(rest)])
+    host, port = _host_port(rest[:cut])  # userinfo fails there: "@" is not a host character
+    path, q, query = rest[cut:].partition("?")
+    path = _remove_dot_segments(_pct(path, _PCHAR | {"/"}))
+    return f"https://{host}{port}{path}", _pct(query, _PCHAR | {"/", "?"}) if q else None
+
+
+def normalize_agent_url(url: str) -> str:
+    """The -01 identifier of a Signature-Agent URL (query dropped, -01 section 5.5); ValueError if bad."""
+    return _split_agent_url(url)[0]
+
+
+def _directory_entry(entry: str) -> Tuple[str, str]:
+    """``(identifier, fetch URL)`` for a server-configured entry, never a request header.
+
+    Deviation from -01 sections 4.1/4.4: a bare origin (path ``/``) fetches the well-known
+    directory, reserved for the domain operator (-01 section 4.5), and keeps ``https://host/``."""
+    ident, query = _split_agent_url(entry)
+    base = ident[:-1] + WELL_KNOWN_DIRECTORY if ident.count("/") == 3 and ident.endswith("/") else ident
+    return ident, base + ("?" + query if query else "")
+
+
+class _Allowlist(set):
+    """Identifiers. ``add``, ``update`` and ``|=`` reject a value that is not normalized, so
+    a 0.1.1-style origin fails loudly instead of never matching; other set operations do not."""
+
+    def add(self, value):
+        if value != normalize_agent_url(value):
+            raise ValueError(f"not a normalized identifier; use {normalize_agent_url(value)!r}")
+        super().add(value)
+
+    def update(self, *others):
+        for other in others:
+            for value in other:
+                self.add(value)
+
+    def __ior__(self, other):
+        self.update(other)
+        return self
 
 
 @dataclass
@@ -559,8 +639,9 @@ class ResolvedKey:
 
 
 class KeyResolver(Protocol):
-    # Optional ``directory_unavailable(operator, now) -> bool``: side-effect free, read only after
-    # resolve() returned None; True maps that miss to UNKNOWN_OPERATOR. Never yields a key or trust.
+    # ``operator`` is a normalized identifier or None. Optional ``directory_unavailable(operator,
+    # now) -> bool``: side-effect free, read only after resolve() returned None; True maps that
+    # miss to UNKNOWN_OPERATOR. Never yields a key or trust.
     def resolve(self, keyid: str, operator: Optional[str], now: float) -> Optional[ResolvedKey]: ...
 
     def is_allowlisted(self, operator: Optional[str]) -> bool: ...
@@ -569,8 +650,8 @@ class KeyResolver(Protocol):
 class StaticKeyResolver:
     """Keys configured in code or config, e.g. for tests or out-of-band registered agents.
 
-    ``keys`` maps operator origin (or None for agents that send no
-    Signature-Agent, or only an ignored member) to a JWKS dict or list of JWKs.
+    ``keys`` maps an agent URL, stored as its normalized identifier (or None for agents that
+    send no Signature-Agent, or only an ignored member), to a JWKS dict or list of JWKs.
     """
 
     def __init__(self, keys: Mapping, trusted: bool = True, allow_test_keys: bool = False):
@@ -582,7 +663,7 @@ class StaticKeyResolver:
             bad = TEST_KEY_THUMBPRINTS.intersection(parsed)
             if bad and not allow_test_keys:  # fail fast: a published key must not be configured
                 raise ValueError(f"configuration contains a known test key: {sorted(bad)[0]}")
-            self._keys[normalize_origin(op) if op else None] = parsed
+            self._keys[normalize_agent_url(op) if op else None] = parsed
 
     def is_allowlisted(self, operator):
         return self.trusted and operator in self._keys
@@ -597,26 +678,26 @@ class StaticKeyResolver:
 class DirectoryKeyResolver:
     """Fetches and caches key directories for allowlisted operators only.
 
-    Never fetches for an operator outside ``allowlist``: a request header must
-    not be able to make the server fetch an arbitrary URL (SSRF). Directories
-    for other operators can be added by a background job via
-    ``add_untrusted_directory``; keys from those resolve as untrusted.
+    ``allowlist`` holds full https URLs; each becomes an identifier (spec section 3.2) that
+    fetches itself, or the well-known directory for a bare origin (a deviation from -01).
+    ``resolver.allowlist`` is the set of identifiers; assigning a new set is unsupported.
+    Never fetches a URL named by a request (SSRF). Directories for other identifiers can be
+    added by a background job via ``add_untrusted_directory``; those keys resolve untrusted.
     """
 
     def __init__(self, allowlist: Iterable[str], fetch: Callable[[str], tuple] = None,
                  min_ttl: int = 300, max_ttl: int = 86400, refetch_interval: int = 60,
                  max_keys: int = 64, allow_test_keys: bool = False):
-        self._directory_urls = {}
+        self._fetch_urls = {}
         for entry in allowlist:
-            origin, url = normalize_origin(entry), directory_url(entry)
-            if origin in self._directory_urls and self._directory_urls[origin] != url:
-                raise ValueError(f"conflicting directory URLs for origin {origin}")
-            self._directory_urls[origin] = url
-        self.allowlist = set(self._directory_urls)
+            ident, url = _directory_entry(entry)
+            if self._fetch_urls.setdefault(ident, url) != url:
+                raise ValueError(f"conflicting directory URLs for {ident}")
+        self.allowlist = _Allowlist(self._fetch_urls)
         self.fetch = fetch or safe_fetch_directory
         self.min_ttl, self.max_ttl, self.refetch_interval = min_ttl, max_ttl, refetch_interval
         self.max_keys, self.allow_test_keys = max_keys, allow_test_keys
-        self._cache = {}  # origin -> (keys, expires_at, trusted)
+        self._cache = {}  # identifier -> (keys, expires_at, trusted)
         self._last_fetch = {}
         self._lock = threading.Lock()
 
@@ -625,7 +706,7 @@ class DirectoryKeyResolver:
 
     def add_untrusted_directory(self, operator: str, data, ttl: int = 3600, now: float = None):
         now = time.time() if now is None else now
-        op = normalize_origin(operator)
+        op = normalize_agent_url(operator)
         if op in self.allowlist:
             raise ValueError("operator is allowlisted; it is fetched, not added")
         with self._lock:
@@ -640,9 +721,7 @@ class DirectoryKeyResolver:
                 return
             # Reserve the attempt before I/O, including failures and cold starts.
             self._last_fetch[op] = now
-            url = self._directory_urls.get(op)
-            if url is None:
-                url = directory_url(op)
+            url = self._fetch_urls.get(op) or _directory_entry(op)[1]
         body, max_age = self.fetch(url)
         ttl = min(max(max_age if max_age is not None else self.min_ttl, self.min_ttl), self.max_ttl)
         keys = parse_directory(body, self.max_keys, self.allow_test_keys)
@@ -774,11 +853,12 @@ HOSTILE = frozenset({Outcome.INVALID, Outcome.EXPIRED, Outcome.REPLAY})
 class Result:
     outcome: Outcome
     reason: str = ""
-    operator: Optional[str] = None
+    operator: Optional[str] = None  # identifier, set only on an accepted outcome
     keyid: Optional[str] = None
     label: Optional[str] = None
     binds_request: bool = False     # method, path, query and body are all covered
     replay_protected: bool = False  # nonce present and recorded
+    claimed_agent: Optional[str] = None  # normalized Signature-Agent; logging only (-01 4.1)
 
     @property
     def hostile(self) -> bool:
@@ -840,7 +920,7 @@ class Verifier:
             if cd is None or not content_digest_matches(cd, req.body):
                 res.reason = "content-digest does not match body"; return res
 
-        resolved = self._resolve_key(res, keyid, res.operator, now)
+        resolved = self._resolve_key(res, keyid, res.claimed_agent, now)
         if resolved is None:
             return res
 
@@ -865,7 +945,7 @@ class Verifier:
             return stop
 
         res.outcome = Outcome.VERIFIED if resolved.trusted else Outcome.SIGNED_UNTRUSTED
-        res.reason = "ok"
+        res.reason, res.operator = "ok", res.claimed_agent
         return res
 
     @staticmethod
@@ -920,18 +1000,18 @@ class Verifier:
         if not names & {"@authority", "@target-uri"}:
             res.reason = "@authority or @target-uri must be covered"; return res
 
-        # Operator identity from Signature-Agent (must be signed if present).
-        operator = None
+        # Claimed identity from Signature-Agent (must be signed if present).
+        agent = None
         agent_header = req.header("signature-agent")
         if agent_header is not None:
             agent_url, error = self._agent_member(agent_header, covered, label)
             if error is not None:
                 res.reason = error; return res
             try:  # None: the member is ignored and the key is looked up as for no header
-                operator = None if agent_url is None else normalize_origin(agent_url)
+                agent = None if agent_url is None else normalize_agent_url(agent_url)
             except ValueError as e:
                 res.reason = str(e); return res
-        res.operator = operator
+        res.claimed_agent = agent
         return None
 
     def _check_nonce(self, req: Request, keyid: str, nonce: Optional[str], created: int,
@@ -976,7 +1056,7 @@ class Verifier:
         return None
 
     @staticmethod
-    def _agent_member(header: str, covered: InnerList, label: str) -> tuple:
+    def _agent_member(header: str, covered: InnerList, label: str) -> Tuple[Optional[str], Optional[str]]:
         """Return ``(url, error)`` for the member of ``label`` (spec section 3.4).
 
         ``(None, None)`` means ignored: covered only under another label's key
@@ -993,7 +1073,7 @@ class Verifier:
                 member = parse_item(header)
             except StructuredFieldError:
                 pass
-        if not (isinstance(member, Item) and isinstance(member.value, str)):
+        if not (isinstance(member, Item) and type(member.value) is str):  # a Token is no sf-string
             try:
                 member = parse_dictionary(header).get(label)
             except StructuredFieldError:
@@ -1014,7 +1094,7 @@ def sign_request(req: Request, private_key: Ed25519PrivateKey, *, agent: str,
                  keyid: Optional[str] = None, include_alg: bool = True) -> Request:
     """Return a copy of ``req`` with ``Signature-Agent: <label>="<agent>"``, Content-Digest
     (if covered), Signature-Input and Signature headers added (-01 section 5.2)."""
-    normalize_origin(agent)  # raises ValueError for a non-https agent
+    normalize_agent_url(agent)  # raises ValueError for a bad agent, None included
     if "signature-agent" not in components or not {"@authority", "@target-uri"} & set(components):
         raise ValueError('components must include "signature-agent" and "@authority" or "@target-uri"')
     created = int(time.time()) if created is None else created
