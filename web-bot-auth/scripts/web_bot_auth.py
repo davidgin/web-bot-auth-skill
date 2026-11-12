@@ -570,7 +570,7 @@ class StaticKeyResolver:
     """Keys configured in code or config, e.g. for tests or out-of-band registered agents.
 
     ``keys`` maps operator origin (or None for agents that send no
-    Signature-Agent) to a JWKS dict or list of JWKs.
+    Signature-Agent, or only an ignored member) to a JWKS dict or list of JWKs.
     """
 
     def __init__(self, keys: Mapping, trusted: bool = True, allow_test_keys: bool = False):
@@ -924,14 +924,11 @@ class Verifier:
         operator = None
         agent_header = req.header("signature-agent")
         if agent_header is not None:
-            agent_comps = [c for c in covered.items if c.value == "signature-agent"]
-            if not agent_comps:
-                res.reason = "Signature-Agent present but not covered"; return res
-            agent_url = self._agent_url(agent_header, agent_comps[0], label)
-            if agent_url is None:
-                res.reason = "cannot determine Signature-Agent value"; return res
-            try:
-                operator = normalize_origin(agent_url)
+            agent_url, error = self._agent_member(agent_header, covered, label)
+            if error is not None:
+                res.reason = error; return res
+            try:  # None: the member is ignored and the key is looked up as for no header
+                operator = None if agent_url is None else normalize_origin(agent_url)
             except ValueError as e:
                 res.reason = str(e); return res
         res.operator = operator
@@ -979,54 +976,54 @@ class Verifier:
         return None
 
     @staticmethod
-    def _agent_url(header: str, comp: Item, label: str) -> Optional[str]:
-        # Legacy form: a single sf-string.
-        try:
-            it = parse_item(header)
-            if isinstance(it.value, str) and not isinstance(it.value, Token):
-                return it.value
-        except StructuredFieldError:
-            pass
-        # Draft-05 form: a dictionary of label -> sf-string.
-        try:
-            d = parse_dictionary(header)
-        except StructuredFieldError:
-            return None
-        key = comp.params.get("key")
-        member = d.get(key) if isinstance(key, str) else (
-            d.get(label) or (next(iter(d.values())) if len(d) == 1 else None))
+    def _agent_member(header: str, covered: InnerList, label: str) -> tuple:
+        """Return ``(url, error)`` for the member of ``label`` (spec section 3.4).
+
+        ``(None, None)`` means ignored: covered only under another label's key
+        (an intermediary may relabel the signature, not the covered key), or
+        the member has parameters (-01 section 5.2.1)."""
+        keys = [c.params.get("key") for c in covered.items if c.value == "signature-agent"]
+        if not keys:
+            return None, "Signature-Agent present but not covered"
+        if label not in keys and None not in keys:
+            return None, None
+        member = None
+        if label not in keys:  # bare component: a legacy sf-string stands for {label: value}
+            try:
+                member = parse_item(header)
+            except StructuredFieldError:
+                pass
+        if not (isinstance(member, Item) and isinstance(member.value, str)):
+            try:
+                member = parse_dictionary(header).get(label)
+            except StructuredFieldError:
+                member = None
+        if isinstance(member, Item) and member.params:
+            return None, None
         if isinstance(member, Item) and isinstance(member.value, str) and not isinstance(member.value, Token):
-            return member.value
-        return None
+            return member.value, None
+        return None, "cannot determine Signature-Agent value"
 
 
 # --- Signing (for tests, examples and agent operators) ---
 
-def sign_request(req: Request, private_key: Ed25519PrivateKey, *,
+def sign_request(req: Request, private_key: Ed25519PrivateKey, *, agent: str,
                  components: Sequence[str] = ("@method", "@authority", "@path", "signature-agent"),
                  created: Optional[int] = None, expires: Optional[int] = None,
-                 nonce: Optional[str] = None, agent: Optional[str] = None,
-                 agent_as_dictionary: bool = False, label: str = "sig1",
+                 nonce: Optional[str] = None, label: str = "sig1",
                  keyid: Optional[str] = None, include_alg: bool = True) -> Request:
-    """Return a copy of ``req`` with Signature-Agent, Content-Digest (if covered),
-    Signature-Input and Signature headers added."""
+    """Return a copy of ``req`` with ``Signature-Agent: <label>="<agent>"``, Content-Digest
+    (if covered), Signature-Input and Signature headers added (-01 section 5.2)."""
+    normalize_origin(agent)  # raises ValueError for a non-https agent
+    if "signature-agent" not in components or not {"@authority", "@target-uri"} & set(components):
+        raise ValueError('components must include "signature-agent" and "@authority" or "@target-uri"')
     created = int(time.time()) if created is None else created
     expires = created + 60 if expires is None else expires
     keyid = keyid or jwk_thumbprint(public_jwk(private_key))
     headers = [(k, v) for k, v in req._headers
                if k not in ("signature", "signature-input", "signature-agent")]
-    comps = []
-    for c in components:
-        if c == "signature-agent" and agent is None:
-            continue
-        if c == "signature-agent" and agent_as_dictionary:
-            comps.append(Item(c, {"key": label}))
-        else:
-            comps.append(Item(c))
-    if agent is not None:
-        headers.append(("signature-agent",
-                        f'{label}={serialize_bare_item(agent)}' if agent_as_dictionary
-                        else serialize_bare_item(agent)))
+    headers.append(("signature-agent", f"{label}={serialize_bare_item(agent)}"))
+    comps = [Item(c, {"key": label} if c == "signature-agent" else {}) for c in components]
     if "content-digest" in components and not any(k == "content-digest" for k, _ in headers):
         headers.append(("content-digest", f"sha-256=:{base64.b64encode(hashlib.sha256(req.body).digest()).decode()}:"))
     params: Params = {"created": created, "expires": expires, "keyid": keyid}
@@ -1035,11 +1032,13 @@ def sign_request(req: Request, private_key: Ed25519PrivateKey, *,
     if nonce is not None:
         params["nonce"] = nonce
     params["tag"] = TAG
-    covered = InnerList(comps, params)
-    out = Request(req.method, req.url, headers, req.body)
-    sig = private_key.sign(signature_base(out, covered))
-    out = Request(req.method, req.url, headers + [
+    return _sign(Request(req.method, req.url, headers, req.body), private_key,
+                 InnerList(comps, params), label)
+
+
+def _sign(req: Request, private_key: Ed25519PrivateKey, covered: InnerList, label: str) -> Request:
+    """Sign ``req`` as given, with no header or coverage checks (tests and vectors)."""
+    sig = private_key.sign(signature_base(req, covered))
+    return Request(req.method, req.url, req._headers + [
         ("signature-input", f"{label}={serialize_inner_list(covered)}"),
-        ("signature", f"{label}=:{base64.b64encode(sig).decode()}:"),
-    ], req.body)
-    return out
+        ("signature", f"{label}=:{base64.b64encode(sig).decode()}:")], req.body)

@@ -31,15 +31,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:NZYr8POS2nqlnDn60Scjc8qFyIaRfqcHz8EsnjOx7ULR8zThWfeyOKeDSsF7fZfz7qYJlEZsw7cZgkanbCdWAw==:"
+            "sig1=:hidANa+X1FZyYw8P/L1idbylV3gU4Pjr+EDUkFyrZk75bwqdMn2M+zH7JJ6JKLkDrIFVnL5LQ8ejZAjm8YsdBQ==:"
           ]
         ],
         "body_base64": ""
@@ -63,7 +63,7 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "content-digest",
@@ -71,11 +71,11 @@
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\" \"content-digest\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\" \"content-digest\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:+ftqv8hBifLsgS8L7t40vDpXGvK/orI/RKGp0wDfmDwGpbkgi0X5FWvIHntQ35Muix8afyAheKwRGSQgVi8CBA==:"
+            "sig1=:J9U9T3jOIOnw/Atz1u1eebC8k7PkN66reoJ5FZr8SJ+ACmUmhvsPzWFOkR3qbsbvGQR7qOTPDjjSnZfNwVAiCg==:"
           ]
         ],
         "body_base64": "eyJxdHkiOiAyfQ=="
@@ -88,7 +88,7 @@
       }
     },
     {
-      "name": "verified_dictionary_agent",
+      "name": "verified_custom_label",
       "request": {
         "method": "GET",
         "url": "https://shop.example/items/42",
@@ -99,15 +99,15 @@
           ],
           [
             "signature-agent",
-            "sig1=\"https://agent.example\""
+            "agent=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "agent=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:hidANa+X1FZyYw8P/L1idbylV3gU4Pjr+EDUkFyrZk75bwqdMn2M+zH7JJ6JKLkDrIFVnL5LQ8ejZAjm8YsdBQ==:"
+            "agent=:M6qaS0H0fnyyK7V7bXTJ37E0gEusflmYAie7yhEtFzlzCJzZYJRE2k0WzTfn78LKPfhlavjaybZSZldkf5uLAA==:"
           ]
         ],
         "body_base64": ""
@@ -131,15 +131,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@authority\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@authority\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:6oIn6oCE9qRzsJKNpSvHdv+LLXRfiTQca8mmMT1ZBjSR2+UcZV4JjL29uxQtUlTlHsBV0vZZbAi8iPWNaqlNDg==:"
+            "sig1=:2izdsreuSynme3+9JxjLrq78ifbS2NsdaRRnvdpdXd1IQHinsyU9Km3ZS2h3GMdwhvC+rWUqNF/2Ds0T2sSyAQ==:"
           ]
         ],
         "body_base64": ""
@@ -163,15 +163,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:PwTZgL/SMsBC/ypu2cSBx0tED3trABHT/dvSDuJQ51jop6IVFD1KK3Z6mulBUUGsPGH1VgvNAAhcuxOHoajuAQ==:"
+            "sig1=:9YN2smRgYUcsiL5pjC5xtcSnwJt9sQ+2JTx/yw4v1EPcpbif8l8qJh0z0K3dMrUNfcJWZEvptvm+OosuyJt0DQ==:"
           ]
         ],
         "body_base64": ""
@@ -213,7 +213,7 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "content-digest",
@@ -221,11 +221,11 @@
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\" \"content-digest\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\" \"content-digest\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:+ftqv8hBifLsgS8L7t40vDpXGvK/orI/RKGp0wDfmDwGpbkgi0X5FWvIHntQ35Muix8afyAheKwRGSQgVi8CBA==:"
+            "sig1=:J9U9T3jOIOnw/Atz1u1eebC8k7PkN66reoJ5FZr8SJ+ACmUmhvsPzWFOkR3qbsbvGQR7qOTPDjjSnZfNwVAiCg==:"
           ]
         ],
         "body_base64": "eyJxdHkiOiAyMDB9"
@@ -247,15 +247,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:NZYr8POS2nqlnDn60Scjc8qFyIaRfqcHz8EsnjOx7ULR8zThWfeyOKeDSsF7fZfz7qYJlEZsw7cZgkanbCdWAw==:"
+            "sig1=:hidANa+X1FZyYw8P/L1idbylV3gU4Pjr+EDUkFyrZk75bwqdMn2M+zH7JJ6JKLkDrIFVnL5LQ8ejZAjm8YsdBQ==:"
           ]
         ],
         "body_base64": ""
@@ -277,15 +277,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:NZYr8POS2nqlnDn60Scjc8qFyIaRfqcHz8EsnjOx7ULR8zThWfeyOKeDSsF7fZfz7qYJlEZsw7cZgkanbCdWAw==:"
+            "sig1=:hidANa+X1FZyYw8P/L1idbylV3gU4Pjr+EDUkFyrZk75bwqdMn2M+zH7JJ6JKLkDrIFVnL5LQ8ejZAjm8YsdBQ==:"
           ]
         ],
         "body_base64": ""
@@ -307,15 +307,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:6SONOKD5XK1N4Qbxwmvao/9/12DCUD3TlWInPs7IHSOkBRSO52dxhlKK4y8l35MvXLCIWhIJPAzr0hZ7KBdfDw==:"
+            "sig1=:l81pEQEq2FC+E+l8Ogpzl/LY3Xkb1tAiKNIg9zv5ZB0trIymVaxWM8gyE65HSdHvuUtz6dwX5ZqQZh5zPcs9Bg==:"
           ]
         ],
         "body_base64": ""
@@ -337,15 +337,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"rsa-pss-sha512\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"rsa-pss-sha512\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:NZYr8POS2nqlnDn60Scjc8qFyIaRfqcHz8EsnjOx7ULR8zThWfeyOKeDSsF7fZfz7qYJlEZsw7cZgkanbCdWAw==:"
+            "sig1=:hidANa+X1FZyYw8P/L1idbylV3gU4Pjr+EDUkFyrZk75bwqdMn2M+zH7JJ6JKLkDrIFVnL5LQ8ejZAjm8YsdBQ==:"
           ]
         ],
         "body_base64": ""
@@ -367,15 +367,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1800000060;expires=1800000120;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1800000060;expires=1800000120;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:TrGeRTgaj0z1/PJqwqj0rk1rRtKdF712qKYEG9TfX4lSW8t5rZm8eprTUrcd3/gzGkEv8Bvp+BTy7IIZ0grvAA==:"
+            "sig1=:oGDRt7mCkobOHARbwJaqmoBoYPev9DxcTRthIMaYU9Sxa2U4f4bTm98pQ0wBLPP/qgM38xlLpu4TCm5GDHohBw==:"
           ]
         ],
         "body_base64": ""
@@ -397,15 +397,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800172800;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800172800;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:Udm7i5h9PyjGVcXEA4+fWF/ITiq4ICty3UfUjG9+bFTkxv+FQNuD8Iga434+KjIzX3ktXYaaZRorobNvOCcUBg==:"
+            "sig1=:f3d7f2JO9gNtTL/ynaEZHief7LYtg4nrNOPmiI90q+IVtx9eQX5J8QFbteR73QtXfR+ND0kzbcWLgHFC0GneAQ==:"
           ]
         ],
         "body_base64": ""
@@ -427,15 +427,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"abc\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"abc\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:rztjh72j/13rteamSHgGv8AlKVUTdz9jjTUe/PnjB3W5Z1WjMsOTFw9BWq8sIoHBBYvQbPfvlZhCj4HRuT7UDw==:"
+            "sig1=:ox4QgTEym0EMKxLFU33LSsDO47+nYbQBp1wQN+1XV8PJLjhdYO7jCc0DPi2ZmkR3s0KQwGBE+8hXRIJVVvlUDg==:"
           ]
         ],
         "body_base64": ""
@@ -457,15 +457,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999880;expires=1799999940;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999880;expires=1799999940;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:l+iNBta0jr0z0tzXZZczvg74lRO5PqyRog6msR/rly6gVQ0hkiRSdHOJSsVM8cPHlZAbeDu/M8Ba0cxfBTkLCg==:"
+            "sig1=:BqcsH74+2PpCCmR6DiE0XrqfevlbuioLi3teQe3q59o0za6GtWNaqAaRiDGxt9N/NC6kHSDvy8vFfQpTn2NYAg==:"
           ]
         ],
         "body_base64": ""
@@ -487,15 +487,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799996400;expires=1800003600;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799996400;expires=1800003600;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:BVbS7bkP6q/eJRkQwqgG5OQmDBDXiV3c+opJyQ1e3/GZ0uxiWSY6Tsfd5orAZOfxecLotGw738v+ar/aUzauDA==:"
+            "sig1=:wmb1R8WZ+3hSCHdwWefTpC2Rvz4D2CEygJcNLTETQR3EJjtPhDOd4IdZ9g/WYFtsmb0KuejquGzSfpOiUrtUCQ==:"
           ]
         ],
         "body_base64": ""
@@ -517,15 +517,15 @@
           ],
           [
             "signature-agent",
-            "\"https://stranger.example\""
+            "sig1=\"https://stranger.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:BJbKky2dMgdJDs2Pz7LI3Ad6QserPuhTC9+c1fVcpVx4Y3X3pBUQMKtOynLHzTrpjP9tTPRPeOK6ukTSFlPgAA==:"
+            "sig1=:WDaa53oT6mIkmsfhlNnmHSaFNMEvh3yyy6bRmu4zp6SBWcnDJpA319TfcbcVpVEQ3kKuAMKgb7Na/cW5MU6ECQ==:"
           ]
         ],
         "body_base64": ""
@@ -547,15 +547,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@authority\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@authority\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:6oIn6oCE9qRzsJKNpSvHdv+LLXRfiTQca8mmMT1ZBjSR2+UcZV4JjL29uxQtUlTlHsBV0vZZbAi8iPWNaqlNDg==:"
+            "sig1=:2izdsreuSynme3+9JxjLrq78ifbS2NsdaRRnvdpdXd1IQHinsyU9Km3ZS2h3GMdwhvC+rWUqNF/2Ds0T2sSyAQ==:"
           ]
         ],
         "body_base64": ""
@@ -579,15 +579,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:PwTZgL/SMsBC/ypu2cSBx0tED3trABHT/dvSDuJQ51jop6IVFD1KK3Z6mulBUUGsPGH1VgvNAAhcuxOHoajuAQ==:"
+            "sig1=:9YN2smRgYUcsiL5pjC5xtcSnwJt9sQ+2JTx/yw4v1EPcpbif8l8qJh0z0K3dMrUNfcJWZEvptvm+OosuyJt0DQ==:"
           ]
         ],
         "body_base64": ""
@@ -611,15 +611,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:NZYr8POS2nqlnDn60Scjc8qFyIaRfqcHz8EsnjOx7ULR8zThWfeyOKeDSsF7fZfz7qYJlEZsw7cZgkanbCdWAw==:"
+            "sig1=:hidANa+X1FZyYw8P/L1idbylV3gU4Pjr+EDUkFyrZk75bwqdMn2M+zH7JJ6JKLkDrIFVnL5LQ8ejZAjm8YsdBQ==:"
           ]
         ],
         "body_base64": ""
@@ -644,15 +644,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:NZYr8POS2nqlnDn60Scjc8qFyIaRfqcHz8EsnjOx7ULR8zThWfeyOKeDSsF7fZfz7qYJlEZsw7cZgkanbCdWAw==:"
+            "sig1=:hidANa+X1FZyYw8P/L1idbylV3gU4Pjr+EDUkFyrZk75bwqdMn2M+zH7JJ6JKLkDrIFVnL5LQ8ejZAjm8YsdBQ==:"
           ]
         ],
         "body_base64": ""

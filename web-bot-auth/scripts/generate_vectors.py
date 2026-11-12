@@ -52,7 +52,7 @@ def cases():
     post = req("POST", body=b'{"qty": 2}')
     yield "verified_bound", req(), {}
     yield "verified_post_body", post, {}
-    yield "verified_dictionary_agent", req(agent_as_dictionary=True), {}
+    yield "verified_custom_label", req(label="agent"), {}
     yield "verified_minimal_coverage_unbound", req(components=("@authority", "signature-agent")), {}
     yield "verified_without_nonce", req(nonce=None), {}
     yield "unsigned", Request("GET", "https://shop.example/", [("host", "shop.example")]), {}

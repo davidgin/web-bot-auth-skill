@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
+import web_bot_auth
 from web_bot_auth import (
     DirectoryKeyResolver, InMemoryNonceStore, content_digest_matches, NonceStoreError, Outcome, Policy,
     Request, StaticKeyResolver, Verifier, jwk_thumbprint, parse_dictionary, parse_directory,
@@ -60,8 +61,10 @@ class Accepts(Fixture):
         self.assertEqual(r.outcome, Outcome.VERIFIED, r.reason)
         self.assertTrue(r.binds_request)
 
-    def test_draft05_dictionary_signature_agent(self):
-        r = self.outcome(self.signed(agent_as_dictionary=True))
+    def test_dictionary_signature_agent_is_default(self):
+        req = self.signed()
+        self.assertEqual(req.header("signature-agent"), f'sig1="{AGENT}"')
+        r = self.outcome(req)
         self.assertEqual(r.outcome, Outcome.VERIFIED, r.reason)
 
     def test_minimal_draft_coverage_verifies_but_is_unbound(self):
@@ -121,20 +124,20 @@ class Rejects(Fixture):
         self.assertOutcome(Request("GET", "https://other.example/items/42", req._headers), Outcome.INVALID)
 
     def test_neither_authority_nor_target_uri_is_invalid(self):
-        req = self.signed(components=("@method", "@path", "signature-agent"))
+        req = hand_signed(self.key, f'sig1="{AGENT}"', '"@method" "@path" "signature-agent";key="sig1"')
         r = self.assertOutcome(req, Outcome.INVALID)
         self.assertEqual(r.reason, "@authority or @target-uri must be covered")
 
     def test_signature_agent_swap(self):
         req = self.signed()
-        h = [(k, '"https://evil.example"' if k == "signature-agent" else v) for k, v in req._headers]
+        h = [(k, 'sig1="https://evil.example"' if k == "signature-agent" else v) for k, v in req._headers]
         r = self.outcome(Request(req.method, req.url, h))
         self.assertNotEqual(r.outcome, Outcome.VERIFIED)
 
     def test_uncovered_signature_agent(self):
-        req = self.signed(components=("@method", "@authority", "@path"))
-        req = Request(req.method, req.url, req._headers + [("signature-agent", f'"{AGENT}"')])
-        self.assertOutcome(req, Outcome.INVALID)
+        req = hand_signed(self.key, f'"{AGENT}"', '"@method" "@authority" "@path"')
+        r = self.assertOutcome(req, Outcome.INVALID)
+        self.assertEqual(r.reason, "Signature-Agent present but not covered")
 
     def test_expired(self):
         self.assertOutcome(self.signed(created=NOW - 120, expires=NOW - 60), Outcome.EXPIRED)
@@ -375,11 +378,13 @@ class DirectorySecurity(Fixture):
         self.assertEqual(result.reason, "unknown keyid for allowlisted operator")
 
     def test_attacker_path_cannot_impersonate_cold_operator(self):
-        for dictionary in (False, True):
-            with self.subTest(dictionary=dictionary):
+        legacy = hand_signed(self.attacker, f'"{self.evil_url}"', '"@authority" "signature-agent"',
+                             url="https://shop.example/x", created=self.now - 1)
+        for name, req in (("legacy", legacy), ("dictionary", self.attack())):
+            with self.subTest(name):
                 self.resolver = DirectoryKeyResolver([AGENT], fetch=self.fetch)
                 self.verifier = Verifier(self.resolver, clock=lambda: self.now)
-                result = self.outcome(self.attack(agent_as_dictionary=dictionary))
+                result = self.outcome(req)
                 self.assertEqual(result.outcome, Outcome.INVALID)
                 self.assertEqual(result.operator, AGENT)
         self.assertEqual(self.fetched, [AGENT + WELL_KNOWN_DIRECTORY] * 2)
@@ -420,13 +425,17 @@ class DirectorySecurity(Fixture):
 
     def test_malformed_agent_does_not_fetch_or_change_state(self):
         req = self.attack()
+        cases = [(h, Request(req.method, req.url, [(k, h if k == "signature-agent" else v)
+                                                   for k, v in req._headers]))
+                 for h in ('sig1="http://agent.example"', 'sig1="not a URL"',
+                           'sig1="https://agent.example:bad"')]
+        cases += [(h, hand_signed(self.attacker, h, '"@authority" "signature-agent"',
+                                  url="https://shop.example/x", created=self.now - 1))
+                  for h in ('""', '" "', 'sig1="unterminated', 'sig1=?1')]
         before = {k: dict(v) for k, v in vars(self.resolver).items() if isinstance(v, dict)}
-        for header in ('""', '" "', 'sig1="unterminated', 'sig1=?1',
-                       '"http://agent.example"', '"not a URL"', '"https://agent.example:bad"'):
+        for header, bad in cases:
             with self.subTest(header=header):
-                headers = [(k, header if k == "signature-agent" else v) for k, v in req._headers]
-                self.assertEqual(self.outcome(Request(req.method, req.url, headers)).outcome,
-                                 Outcome.INVALID)
+                self.assertEqual(self.outcome(bad).outcome, Outcome.INVALID)
                 self.assertEqual(self.fetched, [])
                 self.assertEqual({k: dict(v) for k, v in vars(self.resolver).items()
                                   if isinstance(v, dict)}, before)
@@ -434,7 +443,8 @@ class DirectorySecurity(Fixture):
     def test_missing_agent_with_empty_allowlist_does_not_fetch(self):
         self.resolver = DirectoryKeyResolver([], fetch=self.fetch)
         self.verifier = Verifier(self.resolver, clock=clock)
-        self.assertEqual(self.outcome(self.signed(agent=None)).outcome, Outcome.UNKNOWN_OPERATOR)
+        req = hand_signed(self.key, None, '"@method" "@authority" "@path"')
+        self.assertEqual(self.outcome(req).outcome, Outcome.UNKNOWN_OPERATOR)
         self.assertEqual(self.fetched, [])
         self.assertEqual(self.resolver._cache, {})
         self.assertEqual(self.resolver._last_fetch, {})
@@ -1178,6 +1188,126 @@ class Vectors(unittest.TestCase):
     def test_vectors_say_ports_must_allow_test_keys(self):
         import generate_vectors
         self.assertIn("allow_test_keys", generate_vectors.build()["description"])
+
+def hand_signed(key, agent_header, components, label="sig1", url="https://shop.example/items/42",
+                created=NOW - 1):
+    """Sign headers and components exactly as given, through the private _sign (FR-013)."""
+    headers = [("host", "shop.example")]
+    if agent_header is not None:
+        headers.append(("signature-agent", agent_header))
+    covered = parse_dictionary(
+        f'{label}=({components});created={created};expires={created + 60};'
+        f'keyid="{jwk_thumbprint(public_jwk(key))}";alg="ed25519";nonce="{NONCE}";'
+        f'tag="web-bot-auth"')[label]
+    return web_bot_auth._sign(Request("GET", url, headers), key, covered, label)
+
+
+class Signer(Fixture):
+    """FR-013, spec section 3.8."""
+
+    def test_e22_legacy_bytes_from_sign_core(self):
+        headers = E22_HEADERS[:2]
+        covered = parse_dictionary(E22_HEADERS[2][1])["sig2"]
+        out = web_bot_auth._sign(Request("GET", "https://example.com/", headers), B14_KEY,
+                                 covered, "sig2")
+        self.assertEqual(out.header("signature"), E22_HEADERS[3][1])
+        self.assertEqual(out.header("signature-input"), E22_HEADERS[2][1])
+        self.assertEqual(out.header("signature-agent"), '"https://signature-agent.test"')
+
+    def test_agent_is_required(self):
+        with self.assertRaises(TypeError):
+            sign_request(Request("GET", "https://shop.example/", []), self.key)
+
+    def test_rejects_non_https_agent(self):
+        with self.assertRaises(ValueError):
+            self.signed(agent="http://agent.example")
+
+    def test_components_must_cover_signature_agent(self):
+        with self.assertRaises(ValueError):
+            self.signed(components=("@method", "@authority", "@path"))
+
+    def test_components_must_cover_authority_or_target_uri(self):
+        with self.assertRaises(ValueError):
+            self.signed(components=("@method", "@path", "signature-agent"))
+
+    def test_target_uri_alone_is_enough(self):
+        r = self.outcome(self.signed(components=("@target-uri", "signature-agent")))
+        self.assertEqual(r.outcome, Outcome.VERIFIED, r.reason)
+
+    def test_default_sends_dictionary_keyed_by_label(self):
+        req = self.signed()
+        self.assertEqual(req.header("signature-agent"), f'sig1="{AGENT}"')
+        self.assertIn('"signature-agent";key="sig1"', req.header("signature-input"))
+
+    def test_custom_label_keys_member_and_component(self):
+        req = self.signed(label="agent")
+        self.assertEqual(req.header("signature-agent"), f'agent="{AGENT}"')
+        self.assertTrue(req.header("signature-input").startswith("agent=("))
+        self.assertIn('"signature-agent";key="agent"', req.header("signature-input"))
+        r = self.outcome(req)
+        self.assertEqual((r.outcome, r.label, r.operator), (Outcome.VERIFIED, "agent", AGENT), r.reason)
+
+class MemberSelection(Fixture):
+    """FR-003/FR-004, spec section 3.4."""
+    BROWSER = "https://browser.example"
+
+    def verify(self, req, keys):
+        return Verifier(StaticKeyResolver(keys), clock=clock).verify(req)
+
+    def test_each_label_resolves_its_own_member(self):
+        keys = {AGENT: self.jwks, self.BROWSER: self.jwks}
+        members = (f'browser="{self.BROWSER}"', f'agent="{AGENT}"')
+        comps = ('"signature-agent";key="browser"', '"signature-agent";key="agent"')
+        for header in (", ".join(members), ", ".join(reversed(members))):
+            for order in (comps, tuple(reversed(comps))):
+                for label, expected in (("browser", self.BROWSER), ("agent", AGENT)):
+                    with self.subTest(header=header, order=order, label=label):
+                        req = hand_signed(self.key, header, '"@authority" ' + " ".join(order), label)
+                        r = self.verify(req, keys)
+                        self.assertEqual((r.outcome, r.operator), (Outcome.VERIFIED, expected), r.reason)
+
+    def test_bare_component_selects_label_member(self):
+        req = hand_signed(self.key, f'other="https://other.example", sig1="{AGENT}"',
+                          '"@authority" "signature-agent"')
+        r = self.verify(req, {AGENT: self.jwks})
+        self.assertEqual((r.outcome, r.operator), (Outcome.VERIFIED, AGENT), r.reason)
+
+    def test_bare_component_over_dictionary_without_label_member_is_invalid(self):
+        req = hand_signed(self.key, f'agent="{AGENT}"', '"@authority" "signature-agent"')
+        r = self.verify(req, {AGENT: self.jwks})
+        self.assertEqual((r.outcome, r.reason), (Outcome.INVALID, "cannot determine Signature-Agent value"))
+
+    def test_legacy_string_still_verifies(self):
+        req = hand_signed(self.key, f'"{AGENT}"', '"@authority" "signature-agent"')
+        r = self.verify(req, {AGENT: self.jwks})
+        self.assertEqual((r.outcome, r.operator), (Outcome.VERIFIED, AGENT), r.reason)
+
+    def assert_no_url_path(self, req):
+        r = self.verify(req, {AGENT: self.jwks})
+        self.assertEqual((r.outcome, r.reason, r.operator),
+                         (Outcome.UNKNOWN_OPERATOR, "no key for this operator", None))
+        r = self.verify(req, {None: self.jwks})
+        self.assertEqual((r.outcome, r.operator), (Outcome.VERIFIED, None), r.reason)
+
+    def test_member_keyed_to_another_label_is_ignored(self):
+        # Spec scenario 7: not INVALID and not attributed to member agent2.
+        self.assert_no_url_path(hand_signed(self.key, f'agent2="{AGENT}"',
+                                            '"@authority" "signature-agent";key="agent2"', "sig2"))
+
+    def test_relabeled_signature_is_ignored_not_invalid(self):
+        req = hand_signed(self.key, f'agent2="{AGENT}"',
+                          '"@authority" "signature-agent";key="agent2"', "agent2")
+        self.assertEqual(self.verify(req, {AGENT: self.jwks}).outcome, Outcome.VERIFIED)
+        relabel = {"signature": lambda v: v.replace("agent2=", "sig2=", 1),
+                   "signature-input": lambda v: v.replace("agent2=", "sig2=", 1)}
+        headers = [(k, relabel[k](v) if k in relabel else v) for k, v in req._headers]
+        self.assert_no_url_path(Request(req.method, req.url, headers))
+
+    def test_member_with_parameters_is_ignored(self):
+        for header, comp in ((f'sig1="{AGENT}";x=1', '"signature-agent";key="sig1"'),
+                             (f'"{AGENT}";x=1', '"signature-agent"')):
+            with self.subTest(header=header):
+                self.assert_no_url_path(hand_signed(self.key, header, '"@authority" ' + comp))
 
 
 if __name__ == "__main__":
