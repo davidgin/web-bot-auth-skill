@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1
+
+Docs-only release; no code changes.
+
+### Docs
+
+- README rewritten to explain the problem and how the skill solves it, with a quick-start for the 0.2.0 API (#16, fixes #15).
+
 ## 0.2.0
 
 Retargets the verifier from draft-meunier-web-bot-auth-architecture-05 to draft-ietf-webbotauth-httpsig-protocol-01 ("-01"). Several changes are breaking; read **Breaking** before updating.
@@ -32,10 +40,6 @@ Retargets the verifier from draft-meunier-web-bot-auth-architecture-05 to draft-
 - `max_keys` (default 64) on `parse_directory`, and the test-key denylist (`TEST_KEY_THUMBPRINTS`, `allow_test_keys`).
 - `normalize_agent_url`.
 - -01 Appendix E conformance tests (E.2.1, E.2.2, E.2.3; E.1 RSA-PSS is reported as unsupported) and the `normalization` section of the language-neutral test vectors.
-
-### Docs
-
-- README rewritten to explain the problem and the -01 quick-start.
 
 ### Development
 
