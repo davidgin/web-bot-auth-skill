@@ -41,7 +41,7 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 __all__ = [
     "Request", "Policy", "Outcome", "Result", "Verifier",
-    "NonceStore", "InMemoryNonceStore", "RedisNonceStore", "NonceStoreError",
+    "NonceStore", "InMemoryNonceStore", "NonceStoreError",
     "KeyResolver", "ResolvedKey", "StaticKeyResolver", "DirectoryKeyResolver",
     "jwk_thumbprint", "public_jwk", "safe_fetch_directory", "sign_request",
     "Token", "StructuredFieldError",
@@ -737,19 +737,6 @@ class InMemoryNonceStore:
                 return False
             self._seen[key] = now + ttl_seconds
             return True
-
-
-class RedisNonceStore:
-    """Shared store using SET NX PX. Takes any redis-py compatible client."""
-
-    def __init__(self, client, prefix: str = "wba:nonce:"):
-        self.client, self.prefix = client, prefix
-
-    def add_if_absent(self, key, ttl_seconds):
-        try:
-            return bool(self.client.set(self.prefix + key, b"1", nx=True, px=int(ttl_seconds * 1000)))
-        except Exception as e:  # connection errors etc.
-            raise NonceStoreError(str(e)) from e
 
 
 # --------------------------------------------------------------------------
