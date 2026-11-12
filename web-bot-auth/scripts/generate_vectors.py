@@ -80,18 +80,18 @@ def public_kid(k):
 def build():
     vectors = []
     for name, r, policy in cases():
-        v = Verifier(StaticKeyResolver({AGENT: {"keys": [public_jwk(KEY)]}}),
+        v = Verifier(StaticKeyResolver({AGENT: {"keys": [public_jwk(KEY)]}}, allow_test_keys=True),
                      InMemoryNonceStore(clock=lambda: NOW), Policy(**policy), clock=lambda: NOW)
         res = v.verify(r)
         vectors.append(vector(name, r, policy, res))
     # Replay: the same request twice against one nonce store.
     r = req()
-    v = Verifier(StaticKeyResolver({AGENT: {"keys": [public_jwk(KEY)]}}),
+    v = Verifier(StaticKeyResolver({AGENT: {"keys": [public_jwk(KEY)]}}, allow_test_keys=True),
                  InMemoryNonceStore(clock=lambda: NOW), clock=lambda: NOW)
     for name in ("replay_first", "replay_second"):
         vectors.append(vector(name, r, {}, v.verify(r), sequence="replay"))
     return {
-        "description": "Web Bot Auth verifier vectors. TEST KEYS ONLY. Flags are given only for accepted outcomes.",
+        "description": "Web Bot Auth verifier vectors. TEST KEYS ONLY: their thumbprints are on the verifier denylist, so ports must enable their equivalent of allow_test_keys=True to run these vectors. Flags are given only for accepted outcomes.",
         "now": NOW,
         "trusted_keys": {AGENT: {"keys": [public_jwk(KEY)]}},
         "default_policy": {"max_age": 300, "max_lifetime": 86400, "clock_skew": 5,

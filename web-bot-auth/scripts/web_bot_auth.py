@@ -44,7 +44,7 @@ __all__ = [
     "NonceStore", "InMemoryNonceStore", "NonceStoreError",
     "KeyResolver", "ResolvedKey", "StaticKeyResolver", "DirectoryKeyResolver",
     "jwk_thumbprint", "public_jwk", "safe_fetch_directory", "sign_request",
-    "Token", "StructuredFieldError",
+    "Token", "StructuredFieldError", "TEST_KEY_THUMBPRINTS",
 ]
 
 TAG = "web-bot-auth"
@@ -490,15 +490,32 @@ class _DirKey:
         return (self.nbf is None or now >= self.nbf) and (self.exp is None or now < self.exp)
 
 
-def parse_directory(data: Union[bytes, str, Mapping]) -> dict:
-    """Parse a JWKS key directory into {thumbprint: _DirKey}, skipping non-Ed25519 keys."""
+# Published example keys (-01 section 6.8 says "including": the list is not exhaustive).
+TEST_KEY_THUMBPRINTS = frozenset({
+    "poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U",  # RFC 9421 B.1.4; -01 E.2 and 5.5.1 examples
+    "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k",  # RFC 8037 A.1
+    "CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs",  # this skill's generate_vectors.KEY
+    "UBQJjBYkCFLaFgwMbZIQWpA2VRag2Y4CVF51WNWQS-s",  # this skill's generate_vectors.OTHER
+})
+
+
+def parse_directory(data: Union[bytes, str, Mapping], max_keys: int = 64,
+                    allow_test_keys: bool = False) -> dict:
+    """Parse a JWKS key directory into {thumbprint: _DirKey}, skipping non-Ed25519 keys.
+
+    Raises ValueError (a discovery failure, so a resolver keeps its last good copy) when the
+    document is not a JWKS or has more than ``max_keys`` entries (counted before filtering).
+    Keys in ``TEST_KEY_THUMBPRINTS`` are dropped unless ``allow_test_keys``.
+    """
     doc = json.loads(data) if isinstance(data, (bytes, str)) else data
     # A 200 that is not a JWKS is not evidence about the keys (-01 section 6.10);
     # raising lets the caller keep its last good copy instead of caching {}.
     if not isinstance(doc, Mapping) or not isinstance(doc.get("keys"), list):
         raise ValueError("not a JWKS: expected an object with a keys array")
     out = {}
-    for jwk in doc.get("keys", []):
+    if len(doc["keys"]) > max_keys:
+        raise ValueError(f"directory has more than {max_keys} keys")
+    for jwk in doc["keys"]:
         if not isinstance(jwk, Mapping) or jwk.get("kty") != "OKP" or jwk.get("crv") != "Ed25519":
             continue
         try:
@@ -507,7 +524,10 @@ def parse_directory(data: Union[bytes, str, Mapping]) -> dict:
         except Exception:
             continue
         nbf, exp = jwk.get("nbf"), jwk.get("exp")
-        out[jwk_thumbprint(jwk)] = _DirKey(
+        kid = jwk_thumbprint(jwk)
+        if kid in TEST_KEY_THUMBPRINTS and not allow_test_keys:
+            continue
+        out[kid] = _DirKey(
             key,
             nbf if isinstance(nbf, int) and not isinstance(nbf, bool) else None,
             exp if isinstance(exp, int) and not isinstance(exp, bool) else None,
@@ -553,12 +573,16 @@ class StaticKeyResolver:
     Signature-Agent) to a JWKS dict or list of JWKs.
     """
 
-    def __init__(self, keys: Mapping, trusted: bool = True):
+    def __init__(self, keys: Mapping, trusted: bool = True, allow_test_keys: bool = False):
         self.trusted = trusted
         self._keys = {}
         for op, jwks in keys.items():
             doc = jwks if isinstance(jwks, Mapping) else {"keys": list(jwks)}
-            self._keys[normalize_origin(op) if op else None] = parse_directory(doc)
+            parsed = parse_directory(doc, allow_test_keys=True)
+            bad = TEST_KEY_THUMBPRINTS.intersection(parsed)
+            if bad and not allow_test_keys:  # fail fast: a published key must not be configured
+                raise ValueError(f"configuration contains a known test key: {sorted(bad)[0]}")
+            self._keys[normalize_origin(op) if op else None] = parsed
 
     def is_allowlisted(self, operator):
         return self.trusted and operator in self._keys
@@ -580,7 +604,8 @@ class DirectoryKeyResolver:
     """
 
     def __init__(self, allowlist: Iterable[str], fetch: Callable[[str], tuple] = None,
-                 min_ttl: int = 300, max_ttl: int = 86400, refetch_interval: int = 60):
+                 min_ttl: int = 300, max_ttl: int = 86400, refetch_interval: int = 60,
+                 max_keys: int = 64, allow_test_keys: bool = False):
         self._directory_urls = {}
         for entry in allowlist:
             origin, url = normalize_origin(entry), directory_url(entry)
@@ -590,6 +615,7 @@ class DirectoryKeyResolver:
         self.allowlist = set(self._directory_urls)
         self.fetch = fetch or safe_fetch_directory
         self.min_ttl, self.max_ttl, self.refetch_interval = min_ttl, max_ttl, refetch_interval
+        self.max_keys, self.allow_test_keys = max_keys, allow_test_keys
         self._cache = {}  # origin -> (keys, expires_at, trusted)
         self._last_fetch = {}
         self._lock = threading.Lock()
@@ -603,7 +629,7 @@ class DirectoryKeyResolver:
         if op in self.allowlist:
             raise ValueError("operator is allowlisted; it is fetched, not added")
         with self._lock:
-            self._cache[op] = (parse_directory(data), now + ttl, False)
+            self._cache[op] = (parse_directory(data, self.max_keys, self.allow_test_keys), now + ttl, False)
 
     def _refresh(self, op: str, now: float, force: bool) -> None:
         with self._lock:
@@ -619,7 +645,7 @@ class DirectoryKeyResolver:
                 url = directory_url(op)
         body, max_age = self.fetch(url)
         ttl = min(max(max_age if max_age is not None else self.min_ttl, self.min_ttl), self.max_ttl)
-        keys = parse_directory(body)
+        keys = parse_directory(body, self.max_keys, self.allow_test_keys)
         with self._lock:
             self._cache[op] = (keys, now + ttl, True)
 
@@ -946,7 +972,8 @@ class Verifier:
             # A transient fetch failure must not read as a hostile signature.
             res.outcome, res.reason = Outcome.UNKNOWN_OPERATOR, "key directory unavailable"
         elif keys.is_allowlisted(operator):
-            res.reason = "unknown keyid for allowlisted operator"
+            known = keyid in TEST_KEY_THUMBPRINTS  # outcome unchanged; only the reason is clearer
+            res.reason = "known test key rejected" if known else "unknown keyid for allowlisted operator"
         else:
             res.outcome, res.reason = Outcome.UNKNOWN_OPERATOR, "no key for this operator"
         return None

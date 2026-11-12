@@ -1,5 +1,5 @@
 {
-  "description": "Web Bot Auth verifier vectors. TEST KEYS ONLY. Flags are given only for accepted outcomes.",
+  "description": "Web Bot Auth verifier vectors. TEST KEYS ONLY: their thumbprints are on the verifier denylist, so ports must enable their equivalent of allow_test_keys=True to run these vectors. Flags are given only for accepted outcomes.",
   "now": 1800000000,
   "trusted_keys": {
     "https://agent.example": {

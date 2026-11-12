@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from web_bot_auth import (
     DirectoryKeyResolver, InMemoryNonceStore, content_digest_matches, NonceStoreError, Outcome, Policy,
     Request, StaticKeyResolver, Verifier, jwk_thumbprint, parse_dictionary, parse_directory,
-    public_jwk, sign_request, signature_base, WELL_KNOWN_DIRECTORY,
+    public_jwk, sign_request, signature_base, TEST_KEY_THUMBPRINTS, WELL_KNOWN_DIRECTORY,
 )
 
 NOW = 1_800_000_000
@@ -576,6 +576,24 @@ class DirectoryRefetch(Fixture):
         self.assertTrue(res.resolve(kid, AGENT, NOW + 301).trusted)
         self.assertEqual(len(calls), 2)
 
+    def test_add_untrusted_directory_rejects_non_jwks_and_keeps_previous_entry(self):
+        res = DirectoryKeyResolver([])
+        res.add_untrusted_directory(AGENT, self.jwks, ttl=60, now=NOW)
+        kid = jwk_thumbprint(public_jwk(self.key))
+        for body in self.NON_JWKS:
+            with self.subTest(body=body):
+                with self.assertRaises(ValueError):
+                    res.add_untrusted_directory(AGENT, body, ttl=60, now=NOW + 1)
+                self.assertIsNotNone(res.resolve(kid, AGENT, NOW + 2))
+
+    def test_non_jwks_refresh_still_counts_as_an_attempt(self):
+        res, kid, calls = self._warm_then_refresh_with(b'{"error": "x"}')
+        self.assertTrue(res.resolve(kid, AGENT, NOW + 301).trusted)  # refresh fails, copy kept
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(res.resolve(kid, AGENT, NOW + 302).trusted)
+        self.assertIsNone(res.resolve("unknown", AGENT, NOW + 303))
+        self.assertEqual(len(calls), 2)  # inside refetch_interval: no extra fetch
+
     def test_valid_directory_without_key_evicts(self):
         res, kid, calls = self._warm_then_refresh_with(b'{"keys": []}')
         self.assertIsNone(res.resolve(kid, AGENT, NOW + 301))
@@ -965,7 +983,7 @@ class ConformanceDraft01(unittest.TestCase):
     """draft-ietf-webbotauth-httpsig-protocol-01 Appendix E vectors."""
 
     def verifier(self):
-        return Verifier(StaticKeyResolver({E_AGENT: {"keys": [E_JWK]}}),
+        return Verifier(StaticKeyResolver({E_AGENT: {"keys": [E_JWK]}}, allow_test_keys=True),
                         policy=Policy(max_age=10**10, max_lifetime=None), clock=lambda: 1735689600)
 
     def check(self, headers):
@@ -990,7 +1008,7 @@ class ConformanceDraft01(unittest.TestCase):
 
     def test_created_beyond_skew_is_future_not_expired(self):
         # Pins the created > now + skew branch of _check_times to its own reason.
-        v = Verifier(StaticKeyResolver({E_AGENT: {"keys": [E_JWK]}}),
+        v = Verifier(StaticKeyResolver({E_AGENT: {"keys": [E_JWK]}}, allow_test_keys=True),
                      policy=Policy(max_age=10**10, max_lifetime=None, clock_skew=5),
                      clock=lambda: 1735689600 - 6)
         r = v.verify(Request("GET", "https://example.com/", E21_HEADERS))
@@ -1001,6 +1019,152 @@ class ConformanceDraft01(unittest.TestCase):
         changed = E23_BODY[:-1] + b"~"
         self.assertFalse(content_digest_matches(E23_DIGEST, changed))
 
+    def test_e21_rejected_by_default(self):
+        # SC-001, second half: the draft's own key is a published test key.
+        res = DirectoryKeyResolver([E_AGENT], fetch=lambda url: (json.dumps({"keys": [E_JWK]}).encode(), 600))
+        v = Verifier(res, policy=Policy(max_age=10**10, max_lifetime=None), clock=lambda: 1735689600)
+        r = v.verify(Request("GET", "https://example.com/", E21_HEADERS))
+        self.assertEqual((r.outcome, r.reason), (Outcome.INVALID, "known test key rejected"))
+
+
+def _jwk_of(x):
+    return {"kty": "OKP", "crv": "Ed25519", "x": x}
+
+
+# Published private keys: RFC 9421 B.1.4 (the PEM in Conformance) and RFC 8037 A.1 (its "d").
+B14_KEY = load_pem_private_key(Conformance.PEM, None)
+A1_KEY = Ed25519PrivateKey.from_private_bytes(
+    base64.urlsafe_b64decode("nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A="))
+# (source, x, thumbprint) as in spec section 3.6; the thumbprints are recomputed by a test.
+TEST_KEYS = (
+    ("RFC 9421 B.1.4", "JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs",
+     "poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U"),
+    ("RFC 8037 A.1", "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+     "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k"),
+    ("vectors KEY", "SJUTQy84WjB_Cq9wkBIZ0TZmXQr7oG4Qo2SykDItiN0",
+     "CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs"),
+    ("vectors OTHER", "hXOBU2vlJ6UWSGIhxRtqMaa7n_9fhKVTJJtvupLHlNc",
+     "UBQJjBYkCFLaFgwMbZIQWpA2VRag2Y4CVF51WNWQS-s"),
+)
+
+
+def _distinct_jwks(n):
+    out = []
+    for i in range(n):
+        seed = i.to_bytes(32, "big")
+        out.append(public_jwk(Ed25519PrivateKey.from_private_bytes(seed)))
+    return out
+
+
+class KeyLimit(Fixture):
+    def test_directory_with_too_many_keys_is_a_discovery_failure(self):
+        with self.assertRaises(ValueError):
+            parse_directory({"keys": _distinct_jwks(65)})
+        self.assertEqual(len(parse_directory({"keys": _distinct_jwks(64)})), 64)
+
+    def test_limit_boundaries(self):
+        self.assertEqual(parse_directory({"keys": []}), {})
+        self.assertEqual(len(parse_directory({"keys": _distinct_jwks(2)}, max_keys=2)), 2)
+        with self.assertRaises(ValueError):
+            parse_directory({"keys": _distinct_jwks(3)}, max_keys=2)
+
+    def test_entries_that_would_be_skipped_count_toward_the_limit(self):
+        junk = [{"kty": "RSA", "n": "AQAB", "e": "AQAB"}, "not an object", {"kty": "OKP", "crv": "Ed25519"}]
+        with self.assertRaises(ValueError):
+            parse_directory({"keys": _distinct_jwks(62) + junk}, max_keys=64)
+        self.assertEqual(len(parse_directory({"keys": _distinct_jwks(61) + junk}, max_keys=64)), 61)
+        with self.assertRaises(ValueError):  # counted before the test-key filter too
+            parse_directory({"keys": [_jwk_of(TEST_KEYS[0][1])] * 3}, max_keys=2)
+
+    def test_oversized_refresh_keeps_the_warm_cache(self):
+        calls = []
+
+        def fetch(url):
+            calls.append(url)
+            # The oversized body omits our key: accepting it would evict the warm copy.
+            keys = [public_jwk(self.key)] if len(calls) == 1 else _distinct_jwks(65)
+            return json.dumps({"keys": keys}).encode(), 300
+
+        res = DirectoryKeyResolver([AGENT], fetch=fetch)
+        kid = jwk_thumbprint(public_jwk(self.key))
+        self.assertTrue(res.resolve(kid, AGENT, NOW).trusted)
+        self.assertTrue(res.resolve(kid, AGENT, NOW + 301).trusted)
+        self.assertEqual(len(calls), 2)  # the oversized refresh really happened
+
+    def test_resolver_max_keys_is_passed_through(self):
+        body = json.dumps({"keys": _distinct_jwks(3)}).encode()
+        res = DirectoryKeyResolver([AGENT], fetch=lambda url: (body, 300), max_keys=2)
+        kid = jwk_thumbprint(_distinct_jwks(3)[0])
+        self.assertIsNone(res.resolve(kid, AGENT, NOW))
+        with self.assertRaises(ValueError):
+            res.add_untrusted_directory("https://other.example", {"keys": _distinct_jwks(3)}, now=NOW)
+        res = DirectoryKeyResolver([AGENT], fetch=lambda url: (body, 300), max_keys=3)
+        self.assertIsNotNone(res.resolve(kid, AGENT, NOW))
+
+
+class TestKeyDenylist(Fixture):
+    def sign_with(self, key):
+        return sign_request(
+            Request("GET", "https://shop.example/items/42", [("host", "shop.example")]), key,
+            components=("@method", "@authority", "@path", "signature-agent"),
+            created=NOW - 1, expires=NOW + 59, nonce=NONCE, agent=AGENT)
+
+    def directory_verifier(self, key, **kw):
+        body = json.dumps({"keys": [public_jwk(key)]}).encode()
+        return Verifier(DirectoryKeyResolver([AGENT], fetch=lambda url: (body, 600), **kw),
+                        clock=clock)
+
+    def test_test_key_thumbprints_are_the_four_known_keys(self):
+        import generate_vectors
+        self.assertEqual(TEST_KEY_THUMBPRINTS, frozenset(t for _, _, t in TEST_KEYS))
+        for source, x, thumb in TEST_KEYS:
+            with self.subTest(source):
+                self.assertEqual(jwk_thumbprint(_jwk_of(x)), thumb)
+        self.assertEqual(public_jwk(B14_KEY)["x"], TEST_KEYS[0][1])
+        self.assertEqual(public_jwk(A1_KEY)["x"], TEST_KEYS[1][1])
+        self.assertEqual(jwk_thumbprint(public_jwk(generate_vectors.KEY)), TEST_KEYS[2][2])
+        self.assertEqual(jwk_thumbprint(public_jwk(generate_vectors.OTHER)), TEST_KEYS[3][2])
+
+    def test_rfc9421_test_key_dropped_from_directory(self):
+        for name, key in (("B.1.4", B14_KEY), ("8037 A.1", A1_KEY)):
+            with self.subTest(name):
+                r = self.directory_verifier(key).verify(self.sign_with(key))
+                self.assertEqual((r.outcome, r.reason), (Outcome.INVALID, "known test key rejected"))
+                r = self.directory_verifier(key, allow_test_keys=True).verify(self.sign_with(key))
+                self.assertEqual(r.outcome, Outcome.VERIFIED, r.reason)
+
+    def test_parse_directory_skips_test_keys_unless_allowed(self):
+        doc = {"keys": [_jwk_of(x) for _, x, _ in TEST_KEYS] + [public_jwk(self.key)]}
+        self.assertEqual(set(parse_directory(doc)), {jwk_thumbprint(public_jwk(self.key))})
+        self.assertEqual(set(parse_directory(doc, allow_test_keys=True)),
+                         {t for _, _, t in TEST_KEYS} | {jwk_thumbprint(public_jwk(self.key))})
+
+    def test_test_key_rejected_in_static_config(self):
+        for source, x, thumb in TEST_KEYS:
+            with self.subTest(source):
+                with self.assertRaisesRegex(ValueError, thumb):
+                    StaticKeyResolver({AGENT: {"keys": [_jwk_of(x)]}})
+                with self.assertRaisesRegex(ValueError, thumb):
+                    StaticKeyResolver({AGENT: [_jwk_of(x)]})
+                res = StaticKeyResolver({AGENT: {"keys": [_jwk_of(x)]}}, allow_test_keys=True)
+                self.assertIsNotNone(res.resolve(thumb, AGENT, NOW))
+
+    def test_add_untrusted_directory_drops_test_keys(self):
+        jwks = {"keys": [public_jwk(B14_KEY)]}
+        res = DirectoryKeyResolver([])
+        res.add_untrusted_directory(AGENT, jwks, now=NOW)
+        r = Verifier(res, clock=clock).verify(self.sign_with(B14_KEY))
+        # Not allowlisted, so the reason is the resolver's no-key outcome; never an accept.
+        self.assertEqual((r.outcome, r.reason), (Outcome.UNKNOWN_OPERATOR, "no key for this operator"))
+        res = DirectoryKeyResolver([], allow_test_keys=True)
+        res.add_untrusted_directory(AGENT, jwks, now=NOW)
+        r = Verifier(res, clock=clock).verify(self.sign_with(B14_KEY))
+        self.assertEqual(r.outcome, Outcome.SIGNED_UNTRUSTED, r.reason)
+
+    def test_ordinary_unknown_keyid_keeps_its_reason(self):
+        r = self.directory_verifier(self.key).verify(self.sign_with(Ed25519PrivateKey.generate()))
+        self.assertEqual((r.outcome, r.reason), (Outcome.INVALID, "unknown keyid for allowlisted operator"))
+
 
 class Vectors(unittest.TestCase):
     def test_vectors_file_is_current(self):
@@ -1010,6 +1174,10 @@ class Vectors(unittest.TestCase):
         with open(path) as f:
             self.assertEqual(json.load(f), generate_vectors.build(),
                              "regenerate: python generate_vectors.py > ../assets/test-vectors.json")
+
+    def test_vectors_say_ports_must_allow_test_keys(self):
+        import generate_vectors
+        self.assertIn("allow_test_keys", generate_vectors.build()["description"])
 
 
 if __name__ == "__main__":
