@@ -1,8 +1,8 @@
 {
-  "description": "Web Bot Auth verifier vectors. TEST KEYS ONLY. Flags are given only for accepted outcomes.",
+  "description": "Web Bot Auth verifier vectors. TEST KEYS ONLY: their thumbprints are on the verifier denylist, so ports must enable their equivalent of allow_test_keys=True to run these vectors. Operators are normalized URLs (the -01 Signature-Agent identifier). Operator, claimed_agent and the flags are given only for accepted outcomes. The normalization section (input to identifier, null for reject) is the cross-language identity contract.",
   "now": 1800000000,
   "trusted_keys": {
-    "https://agent.example": {
+    "https://agent.example/": {
       "keys": [
         {
           "kty": "OKP",
@@ -31,74 +31,6 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
-          ],
-          [
-            "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
-          ],
-          [
-            "signature",
-            "sig1=:NZYr8POS2nqlnDn60Scjc8qFyIaRfqcHz8EsnjOx7ULR8zThWfeyOKeDSsF7fZfz7qYJlEZsw7cZgkanbCdWAw==:"
-          ]
-        ],
-        "body_base64": ""
-      },
-      "policy_overrides": {},
-      "expected": {
-        "outcome": "verified",
-        "binds_request": true,
-        "replay_protected": true
-      }
-    },
-    {
-      "name": "verified_post_body",
-      "request": {
-        "method": "POST",
-        "url": "https://shop.example/items/42",
-        "headers": [
-          [
-            "host",
-            "shop.example"
-          ],
-          [
-            "signature-agent",
-            "\"https://agent.example\""
-          ],
-          [
-            "content-digest",
-            "sha-256=:jTxF/n2drC1ODMRkgX0wn63GSEB4WduK7Fqubhba374=:"
-          ],
-          [
-            "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\" \"content-digest\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
-          ],
-          [
-            "signature",
-            "sig1=:+ftqv8hBifLsgS8L7t40vDpXGvK/orI/RKGp0wDfmDwGpbkgi0X5FWvIHntQ35Muix8afyAheKwRGSQgVi8CBA==:"
-          ]
-        ],
-        "body_base64": "eyJxdHkiOiAyfQ=="
-      },
-      "policy_overrides": {},
-      "expected": {
-        "outcome": "verified",
-        "binds_request": true,
-        "replay_protected": true
-      }
-    },
-    {
-      "name": "verified_dictionary_agent",
-      "request": {
-        "method": "GET",
-        "url": "https://shop.example/items/42",
-        "headers": [
-          [
-            "host",
-            "shop.example"
-          ],
-          [
-            "signature-agent",
             "sig1=\"https://agent.example\""
           ],
           [
@@ -116,11 +48,119 @@
       "expected": {
         "outcome": "verified",
         "binds_request": true,
-        "replay_protected": true
+        "replay_protected": true,
+        "operator": "https://agent.example/",
+        "claimed_agent": "https://agent.example/"
       }
     },
     {
-      "name": "verified_minimal_coverage_unbound",
+      "name": "verified_post_body",
+      "request": {
+        "method": "POST",
+        "url": "https://shop.example/items/42",
+        "headers": [
+          [
+            "host",
+            "shop.example"
+          ],
+          [
+            "signature-agent",
+            "sig1=\"https://agent.example\""
+          ],
+          [
+            "content-digest",
+            "sha-256=:jTxF/n2drC1ODMRkgX0wn63GSEB4WduK7Fqubhba374=:"
+          ],
+          [
+            "signature-input",
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\" \"content-digest\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+          ],
+          [
+            "signature",
+            "sig1=:J9U9T3jOIOnw/Atz1u1eebC8k7PkN66reoJ5FZr8SJ+ACmUmhvsPzWFOkR3qbsbvGQR7qOTPDjjSnZfNwVAiCg==:"
+          ]
+        ],
+        "body_base64": "eyJxdHkiOiAyfQ=="
+      },
+      "policy_overrides": {},
+      "expected": {
+        "outcome": "verified",
+        "binds_request": true,
+        "replay_protected": true,
+        "operator": "https://agent.example/",
+        "claimed_agent": "https://agent.example/"
+      }
+    },
+    {
+      "name": "verified_custom_label",
+      "request": {
+        "method": "GET",
+        "url": "https://shop.example/items/42",
+        "headers": [
+          [
+            "host",
+            "shop.example"
+          ],
+          [
+            "signature-agent",
+            "agent=\"https://agent.example\""
+          ],
+          [
+            "signature-input",
+            "agent=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+          ],
+          [
+            "signature",
+            "agent=:M6qaS0H0fnyyK7V7bXTJ37E0gEusflmYAie7yhEtFzlzCJzZYJRE2k0WzTfn78LKPfhlavjaybZSZldkf5uLAA==:"
+          ]
+        ],
+        "body_base64": ""
+      },
+      "policy_overrides": {},
+      "expected": {
+        "outcome": "verified",
+        "binds_request": true,
+        "replay_protected": true,
+        "operator": "https://agent.example/",
+        "claimed_agent": "https://agent.example/"
+      }
+    },
+    {
+      "name": "verified_target_uri_only",
+      "request": {
+        "method": "GET",
+        "url": "https://shop.example/items/42",
+        "headers": [
+          [
+            "host",
+            "shop.example"
+          ],
+          [
+            "signature-agent",
+            "sig1=\"https://agent.example\""
+          ],
+          [
+            "signature-input",
+            "sig1=(\"@target-uri\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+          ],
+          [
+            "signature",
+            "sig1=:gYUKUxCpJiVpyrZ8OaQID7NGVOXHZBhtM6davJs+FPRnDC/x3djLmS46cqDSVMw4kvA6TrnlBqHeE/Q97I7FAw==:"
+          ]
+        ],
+        "body_base64": ""
+      },
+      "policy_overrides": {},
+      "expected": {
+        "outcome": "verified",
+        "binds_request": false,
+        "replay_protected": true,
+        "operator": "https://agent.example/",
+        "claimed_agent": "https://agent.example/"
+      }
+    },
+    {
+      "name": "verified_legacy_string_agent",
       "request": {
         "method": "GET",
         "url": "https://shop.example/items/42",
@@ -148,7 +188,77 @@
       "expected": {
         "outcome": "verified",
         "binds_request": false,
-        "replay_protected": true
+        "replay_protected": true,
+        "operator": "https://agent.example/",
+        "claimed_agent": "https://agent.example/"
+      }
+    },
+    {
+      "name": "verified_query_ignored_in_identifier",
+      "request": {
+        "method": "GET",
+        "url": "https://shop.example/items/42",
+        "headers": [
+          [
+            "host",
+            "shop.example"
+          ],
+          [
+            "signature-agent",
+            "sig1=\"https://agent.example/?v=3\""
+          ],
+          [
+            "signature-input",
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+          ],
+          [
+            "signature",
+            "sig1=:sWKbsg1xqUGh5G4DOFJqqxWSt77mjuPm8sVaeaR7MgDOzvEF9JzT3JdlA+FVjFO4UxKMZox3If0BAqcXHgHACQ==:"
+          ]
+        ],
+        "body_base64": ""
+      },
+      "policy_overrides": {},
+      "expected": {
+        "outcome": "verified",
+        "binds_request": true,
+        "replay_protected": true,
+        "operator": "https://agent.example/",
+        "claimed_agent": "https://agent.example/"
+      }
+    },
+    {
+      "name": "verified_minimal_coverage_unbound",
+      "request": {
+        "method": "GET",
+        "url": "https://shop.example/items/42",
+        "headers": [
+          [
+            "host",
+            "shop.example"
+          ],
+          [
+            "signature-agent",
+            "sig1=\"https://agent.example\""
+          ],
+          [
+            "signature-input",
+            "sig1=(\"@authority\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+          ],
+          [
+            "signature",
+            "sig1=:2izdsreuSynme3+9JxjLrq78ifbS2NsdaRRnvdpdXd1IQHinsyU9Km3ZS2h3GMdwhvC+rWUqNF/2Ds0T2sSyAQ==:"
+          ]
+        ],
+        "body_base64": ""
+      },
+      "policy_overrides": {},
+      "expected": {
+        "outcome": "verified",
+        "binds_request": false,
+        "replay_protected": true,
+        "operator": "https://agent.example/",
+        "claimed_agent": "https://agent.example/"
       }
     },
     {
@@ -163,15 +273,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:PwTZgL/SMsBC/ypu2cSBx0tED3trABHT/dvSDuJQ51jop6IVFD1KK3Z6mulBUUGsPGH1VgvNAAhcuxOHoajuAQ==:"
+            "sig1=:9YN2smRgYUcsiL5pjC5xtcSnwJt9sQ+2JTx/yw4v1EPcpbif8l8qJh0z0K3dMrUNfcJWZEvptvm+OosuyJt0DQ==:"
           ]
         ],
         "body_base64": ""
@@ -180,7 +290,9 @@
       "expected": {
         "outcome": "verified",
         "binds_request": true,
-        "replay_protected": false
+        "replay_protected": false,
+        "operator": "https://agent.example/",
+        "claimed_agent": "https://agent.example/"
       }
     },
     {
@@ -213,7 +325,7 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "content-digest",
@@ -221,11 +333,11 @@
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\" \"content-digest\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\" \"content-digest\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:+ftqv8hBifLsgS8L7t40vDpXGvK/orI/RKGp0wDfmDwGpbkgi0X5FWvIHntQ35Muix8afyAheKwRGSQgVi8CBA==:"
+            "sig1=:J9U9T3jOIOnw/Atz1u1eebC8k7PkN66reoJ5FZr8SJ+ACmUmhvsPzWFOkR3qbsbvGQR7qOTPDjjSnZfNwVAiCg==:"
           ]
         ],
         "body_base64": "eyJxdHkiOiAyMDB9"
@@ -247,15 +359,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:NZYr8POS2nqlnDn60Scjc8qFyIaRfqcHz8EsnjOx7ULR8zThWfeyOKeDSsF7fZfz7qYJlEZsw7cZgkanbCdWAw==:"
+            "sig1=:hidANa+X1FZyYw8P/L1idbylV3gU4Pjr+EDUkFyrZk75bwqdMn2M+zH7JJ6JKLkDrIFVnL5LQ8ejZAjm8YsdBQ==:"
           ]
         ],
         "body_base64": ""
@@ -277,15 +389,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:NZYr8POS2nqlnDn60Scjc8qFyIaRfqcHz8EsnjOx7ULR8zThWfeyOKeDSsF7fZfz7qYJlEZsw7cZgkanbCdWAw==:"
+            "sig1=:hidANa+X1FZyYw8P/L1idbylV3gU4Pjr+EDUkFyrZk75bwqdMn2M+zH7JJ6JKLkDrIFVnL5LQ8ejZAjm8YsdBQ==:"
           ]
         ],
         "body_base64": ""
@@ -307,15 +419,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:6SONOKD5XK1N4Qbxwmvao/9/12DCUD3TlWInPs7IHSOkBRSO52dxhlKK4y8l35MvXLCIWhIJPAzr0hZ7KBdfDw==:"
+            "sig1=:l81pEQEq2FC+E+l8Ogpzl/LY3Xkb1tAiKNIg9zv5ZB0trIymVaxWM8gyE65HSdHvuUtz6dwX5ZqQZh5zPcs9Bg==:"
           ]
         ],
         "body_base64": ""
@@ -337,15 +449,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"rsa-pss-sha512\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"rsa-pss-sha512\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:NZYr8POS2nqlnDn60Scjc8qFyIaRfqcHz8EsnjOx7ULR8zThWfeyOKeDSsF7fZfz7qYJlEZsw7cZgkanbCdWAw==:"
+            "sig1=:hidANa+X1FZyYw8P/L1idbylV3gU4Pjr+EDUkFyrZk75bwqdMn2M+zH7JJ6JKLkDrIFVnL5LQ8ejZAjm8YsdBQ==:"
           ]
         ],
         "body_base64": ""
@@ -367,15 +479,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1800000060;expires=1800000120;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1800000060;expires=1800000120;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:TrGeRTgaj0z1/PJqwqj0rk1rRtKdF712qKYEG9TfX4lSW8t5rZm8eprTUrcd3/gzGkEv8Bvp+BTy7IIZ0grvAA==:"
+            "sig1=:oGDRt7mCkobOHARbwJaqmoBoYPev9DxcTRthIMaYU9Sxa2U4f4bTm98pQ0wBLPP/qgM38xlLpu4TCm5GDHohBw==:"
           ]
         ],
         "body_base64": ""
@@ -397,15 +509,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800172800;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800172800;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:Udm7i5h9PyjGVcXEA4+fWF/ITiq4ICty3UfUjG9+bFTkxv+FQNuD8Iga434+KjIzX3ktXYaaZRorobNvOCcUBg==:"
+            "sig1=:f3d7f2JO9gNtTL/ynaEZHief7LYtg4nrNOPmiI90q+IVtx9eQX5J8QFbteR73QtXfR+ND0kzbcWLgHFC0GneAQ==:"
           ]
         ],
         "body_base64": ""
@@ -427,15 +539,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"abc\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"abc\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:rztjh72j/13rteamSHgGv8AlKVUTdz9jjTUe/PnjB3W5Z1WjMsOTFw9BWq8sIoHBBYvQbPfvlZhCj4HRuT7UDw==:"
+            "sig1=:ox4QgTEym0EMKxLFU33LSsDO47+nYbQBp1wQN+1XV8PJLjhdYO7jCc0DPi2ZmkR3s0KQwGBE+8hXRIJVVvlUDg==:"
           ]
         ],
         "body_base64": ""
@@ -457,15 +569,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999880;expires=1799999940;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999880;expires=1799999940;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:l+iNBta0jr0z0tzXZZczvg74lRO5PqyRog6msR/rly6gVQ0hkiRSdHOJSsVM8cPHlZAbeDu/M8Ba0cxfBTkLCg==:"
+            "sig1=:BqcsH74+2PpCCmR6DiE0XrqfevlbuioLi3teQe3q59o0za6GtWNaqAaRiDGxt9N/NC6kHSDvy8vFfQpTn2NYAg==:"
           ]
         ],
         "body_base64": ""
@@ -487,15 +599,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799996400;expires=1800003600;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799996400;expires=1800003600;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:BVbS7bkP6q/eJRkQwqgG5OQmDBDXiV3c+opJyQ1e3/GZ0uxiWSY6Tsfd5orAZOfxecLotGw738v+ar/aUzauDA==:"
+            "sig1=:wmb1R8WZ+3hSCHdwWefTpC2Rvz4D2CEygJcNLTETQR3EJjtPhDOd4IdZ9g/WYFtsmb0KuejquGzSfpOiUrtUCQ==:"
           ]
         ],
         "body_base64": ""
@@ -517,15 +629,105 @@
           ],
           [
             "signature-agent",
-            "\"https://stranger.example\""
+            "sig1=\"https://stranger.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:BJbKky2dMgdJDs2Pz7LI3Ad6QserPuhTC9+c1fVcpVx4Y3X3pBUQMKtOynLHzTrpjP9tTPRPeOK6ukTSFlPgAA==:"
+            "sig1=:WDaa53oT6mIkmsfhlNnmHSaFNMEvh3yyy6bRmu4zp6SBWcnDJpA319TfcbcVpVEQ3kKuAMKgb7Na/cW5MU6ECQ==:"
+          ]
+        ],
+        "body_base64": ""
+      },
+      "policy_overrides": {},
+      "expected": {
+        "outcome": "unknown_operator"
+      }
+    },
+    {
+      "name": "unknown_operator_path_mismatch",
+      "request": {
+        "method": "GET",
+        "url": "https://shop.example/items/42",
+        "headers": [
+          [
+            "host",
+            "shop.example"
+          ],
+          [
+            "signature-agent",
+            "sig1=\"https://agent.example/other/path\""
+          ],
+          [
+            "signature-input",
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+          ],
+          [
+            "signature",
+            "sig1=:DpL7f8azlY9w3xt6UswYnznKbyRXzsSdakItjzGHtY6P99nr8u28F4HtVossKNxUl0Df7AqaWDlGgRxLEh3fBw==:"
+          ]
+        ],
+        "body_base64": ""
+      },
+      "policy_overrides": {},
+      "expected": {
+        "outcome": "unknown_operator"
+      }
+    },
+    {
+      "name": "ignored_parameterized_member",
+      "request": {
+        "method": "GET",
+        "url": "https://shop.example/items/42",
+        "headers": [
+          [
+            "host",
+            "shop.example"
+          ],
+          [
+            "signature-agent",
+            "sig1=\"https://agent.example\";x=1"
+          ],
+          [
+            "signature-input",
+            "sig1=(\"@authority\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+          ],
+          [
+            "signature",
+            "sig1=:PbW0FAzfowsLncuNGGvcoK9zyJmRbaIdGEeV9fjJ8RfaxEGiAeMLsDJ2Li919e6FJDT5UeqTE1yhDCws2CMjAA==:"
+          ]
+        ],
+        "body_base64": ""
+      },
+      "policy_overrides": {},
+      "expected": {
+        "outcome": "unknown_operator"
+      }
+    },
+    {
+      "name": "ignored_member_key_not_label",
+      "request": {
+        "method": "GET",
+        "url": "https://shop.example/items/42",
+        "headers": [
+          [
+            "host",
+            "shop.example"
+          ],
+          [
+            "signature-agent",
+            "agent2=\"https://agent.example\""
+          ],
+          [
+            "signature-input",
+            "sig2=(\"@authority\" \"signature-agent\";key=\"agent2\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+          ],
+          [
+            "signature",
+            "sig2=:wmpdl4OOPrEPf/VjAQGnTIsShXeQGdY+emxICv0/c5POPPb4ulJAbNcum5rq7ratLz89z8VLtuq/J8IYDltiBg==:"
           ]
         ],
         "body_base64": ""
@@ -547,15 +749,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@authority\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@authority\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:6oIn6oCE9qRzsJKNpSvHdv+LLXRfiTQca8mmMT1ZBjSR2+UcZV4JjL29uxQtUlTlHsBV0vZZbAi8iPWNaqlNDg==:"
+            "sig1=:2izdsreuSynme3+9JxjLrq78ifbS2NsdaRRnvdpdXd1IQHinsyU9Km3ZS2h3GMdwhvC+rWUqNF/2Ds0T2sSyAQ==:"
           ]
         ],
         "body_base64": ""
@@ -579,15 +781,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:PwTZgL/SMsBC/ypu2cSBx0tED3trABHT/dvSDuJQ51jop6IVFD1KK3Z6mulBUUGsPGH1VgvNAAhcuxOHoajuAQ==:"
+            "sig1=:9YN2smRgYUcsiL5pjC5xtcSnwJt9sQ+2JTx/yw4v1EPcpbif8l8qJh0z0K3dMrUNfcJWZEvptvm+OosuyJt0DQ==:"
           ]
         ],
         "body_base64": ""
@@ -611,15 +813,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:NZYr8POS2nqlnDn60Scjc8qFyIaRfqcHz8EsnjOx7ULR8zThWfeyOKeDSsF7fZfz7qYJlEZsw7cZgkanbCdWAw==:"
+            "sig1=:hidANa+X1FZyYw8P/L1idbylV3gU4Pjr+EDUkFyrZk75bwqdMn2M+zH7JJ6JKLkDrIFVnL5LQ8ejZAjm8YsdBQ==:"
           ]
         ],
         "body_base64": ""
@@ -628,7 +830,9 @@
       "expected": {
         "outcome": "verified",
         "binds_request": true,
-        "replay_protected": true
+        "replay_protected": true,
+        "operator": "https://agent.example/",
+        "claimed_agent": "https://agent.example/"
       },
       "sequence": "replay"
     },
@@ -644,15 +848,15 @@
           ],
           [
             "signature-agent",
-            "\"https://agent.example\""
+            "sig1=\"https://agent.example\""
           ],
           [
             "signature-input",
-            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
           ],
           [
             "signature",
-            "sig1=:NZYr8POS2nqlnDn60Scjc8qFyIaRfqcHz8EsnjOx7ULR8zThWfeyOKeDSsF7fZfz7qYJlEZsw7cZgkanbCdWAw==:"
+            "sig1=:hidANa+X1FZyYw8P/L1idbylV3gU4Pjr+EDUkFyrZk75bwqdMn2M+zH7JJ6JKLkDrIFVnL5LQ8ejZAjm8YsdBQ==:"
           ]
         ],
         "body_base64": ""
@@ -662,6 +866,188 @@
         "outcome": "replay"
       },
       "sequence": "replay"
+    }
+  ],
+  "normalization": [
+    {
+      "input": "HTTPS://Agent.EXAMPLE/K",
+      "identifier": "https://agent.example/K"
+    },
+    {
+      "input": "https://agent.example:443",
+      "identifier": "https://agent.example/"
+    },
+    {
+      "input": "https://a.example:/",
+      "identifier": "https://a.example/"
+    },
+    {
+      "input": "https://a.example:8443/x",
+      "identifier": "https://a.example:8443/x"
+    },
+    {
+      "input": "https://Agent.Example:443/a/./b/../%7euser/k%2fs.json?v=3",
+      "identifier": "https://agent.example/a/~user/k%2Fs.json"
+    },
+    {
+      "input": "https://a.example/a/..",
+      "identifier": "https://a.example/"
+    },
+    {
+      "input": "https://a.example/a/.",
+      "identifier": "https://a.example/a/"
+    },
+    {
+      "input": "https://a.example/%2E%2E/x",
+      "identifier": "https://a.example/x"
+    },
+    {
+      "input": "https://%61.example/",
+      "identifier": "https://a.example/"
+    },
+    {
+      "input": "https://[2001:DB8::1]/",
+      "identifier": "https://[2001:db8::1]/"
+    },
+    {
+      "input": "https://agent.example.",
+      "identifier": "https://agent.example./"
+    },
+    {
+      "input": "https://a.example?x=1",
+      "identifier": "https://a.example/"
+    },
+    {
+      "input": "https://a.example:65535/",
+      "identifier": "https://a.example:65535/"
+    },
+    {
+      "input": "https://a.example/kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+      "identifier": "https://a.example/kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+    },
+    {
+      "input": "",
+      "identifier": null
+    },
+    {
+      "input": "agent.example",
+      "identifier": null
+    },
+    {
+      "input": "http://a.example",
+      "identifier": null
+    },
+    {
+      "input": "data:x",
+      "identifier": null
+    },
+    {
+      "input": "https:///k",
+      "identifier": null
+    },
+    {
+      "input": "https://u@a.example/",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/#f",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example#",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example:x/",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example:0/",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example:0443/",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example:65536/",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example:+443/",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/%zz",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/%4",
+      "identifier": null
+    },
+    {
+      "input": "https://\u00e4.example/",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/a b",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/a\tb",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/a\u007fb",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/a\\b",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/a\"b",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/a{b",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/a|b",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/a^b",
+      "identifier": null
+    },
+    {
+      "input": "https://[v1.x]/",
+      "identifier": null
+    },
+    {
+      "input": "https://[fe80::1%25eth0]/",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/[",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/k?[",
+      "identifier": null
+    },
+    {
+      "input": "https://a.ex%2Fample/",
+      "identifier": null
+    },
+    {
+      "input": "https://a!.example/",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+      "identifier": null
     }
   ]
 }

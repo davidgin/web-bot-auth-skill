@@ -43,18 +43,18 @@ Agent operator                                  Your service
 --------------                                  ------------
 Ed25519 key  ->  public_jwk(key) published at
                  /.well-known/http-message-signatures-directory
-sign_request(...) adds Signature-Agent,
+sign_request(..., agent=URL) adds Signature-Agent,
 Signature-Input, Signature (and Content-Digest
 if covered)  ---------- signed request ------>  adapter builds Request(method, url, headers, body)
                                                 Verifier.verify(request):
                                                   find the tag="web-bot-auth" signature
                                                   check created/expires against Policy
                                                   resolve keyid via DirectoryKeyResolver
-                                                    (allowlisted operators only, SSRF-guarded fetch)
+                                                    (allowlisted identifiers only, SSRF-guarded fetch)
                                                   rebuild the RFC 9421 signature base, verify Ed25519
                                                   check Content-Digest against the body if covered
                                                   record the nonce (after the signature verifies)
-                                                -> Result(outcome, binds_request, replay_protected)
+                                                -> Result(outcome, operator, binds_request, replay_protected, ...)
 ```
 
 Results split traffic into three groups:
@@ -102,7 +102,7 @@ jwks = {"keys": [public_jwk(key)]}            # what the operator publishes in i
 
 # Agent side: sign an outgoing request.
 req = sign_request(Request("GET", "https://shop.example/products?id=1"), key,
-                   agent=AGENT, agent_as_dictionary=True, nonce=secrets.token_urlsafe(32))
+                   agent=AGENT, nonce=secrets.token_urlsafe(32))
 
 # Server side: verify it. StaticKeyResolver stands in for DirectoryKeyResolver here.
 verifier = Verifier(StaticKeyResolver({AGENT: jwks}), InMemoryNonceStore())
@@ -110,16 +110,17 @@ print(verifier.verify(req).outcome.value)     # verified
 print(verifier.verify(req).outcome.value)     # replay: same nonce again
 ```
 
-`agent_as_dictionary=True` sends `Signature-Agent` in the current dictionary form (`sig1="https://agent.example"`); without it, `sign_request` sends the legacy string form.
+`sign_request` requires `agent=` and always sends `Signature-Agent` in the dictionary form (`sig1="https://agent.example"`); it also requires the covered components to include `signature-agent` and `@authority` or `@target-uri`. The verifier identifies the agent by that full URL, normalized (`https://agent.example/`), not by its origin. `result.operator` holds the identifier on accepted outcomes only; `result.claimed_agent` holds the normalized claim for logging.
 
 ### Use it in a service
 
 ```python
-from web_bot_auth import (SAFE_METHODS, DirectoryKeyResolver, Outcome, RedisNonceStore,
-                          Request, Verifier)
+from web_bot_auth import SAFE_METHODS, DirectoryKeyResolver, Outcome, Request, Verifier
 
+# RedisNonceStore is not part of web_bot_auth.py: copy the snippet from
+# web-bot-auth/references/nonce-stores.md into your application.
 verifier = Verifier(
-    keys=DirectoryKeyResolver(allowlist=["https://agent.example"]),
+    keys=DirectoryKeyResolver(allowlist=["https://agent.example/"]),
     nonces=RedisNonceStore(redis_client),
 )
 result = verifier.verify(Request(method, absolute_url, header_pairs, raw_body))
@@ -136,14 +137,11 @@ else:
 
 A `VERIFIED` result can still have `binds_request` false (the signature does not cover the method, path, query and body) or `replay_protected` false (no nonce, or the nonce store was unavailable). The example admits those only for safe methods. For strict mode, pass `policy=Policy(require_binding=True, require_nonce=True)` to `Verifier` (import `Policy` from `web_bot_auth`); such signatures then become `invalid` instead.
 
-Keys come only from the allowlisted origin's `/.well-known/http-message-signatures-directory`, or from a full HTTPS directory URL given as the allowlist entry. A request can never choose where keys are fetched from. Conflicting entries for the same origin raise `ValueError`.
+Allowlist entries are full, normalized HTTPS URLs, and each is a separate identifier: `https://agent.example/` and `https://agent.example/team-a` are different operators even on the same host, and an agent is matched only by the exact URL it sends in `Signature-Agent`. If an agent might send either form, allowlist both. A bare origin entry fetches keys from `/.well-known/http-message-signatures-directory`; any other entry is fetched from its own URL. A request can never choose where keys are fetched from. Conflicting entries for the same identifier, and entries that are not normalized, raise `ValueError`. A directory may hold at most 64 keys, and the known public test keys (RFC 9421 and the skill's own vectors) are rejected unless you pass `allow_test_keys=True`.
 
 ## Spec status
 
-Web Bot Auth is an IETF Internet-Draft, not a standard, and may change.
-
-- The verifier targets [`draft-meunier-web-bot-auth-architecture-05`](https://datatracker.ietf.org/doc/draft-meunier-web-bot-auth-architecture/05/) (March 2026), with the key directory from [`draft-meunier-http-message-signatures-directory-05`](https://datatracker.ietf.org/doc/draft-meunier-http-message-signatures-directory/05/). It also accepts the legacy quoted-string `Signature-Agent` that many deployed agents still send.
-- Those drafts have since been replaced. The current document is the webbotauth working group draft [`draft-ietf-webbotauth-httpsig-protocol-01`](https://datatracker.ietf.org/doc/draft-ietf-webbotauth-httpsig-protocol/) (October 2026). It keeps the pieces described above: `tag="web-bot-auth"`, `created`/`expires`/`keyid`/`tag` as required parameters, the JWK thumbprint `keyid`, the dictionary `Signature-Agent` header, and the `/.well-known/http-message-signatures-directory` location. The verifier has not been reviewed against the rest of that draft.
+Web Bot Auth is an IETF Internet-Draft, not a standard, and may change. As of 0.2.0 the verifier targets the webbotauth working group draft [`draft-ietf-webbotauth-httpsig-protocol-01`](https://datatracker.ietf.org/doc/draft-ietf-webbotauth-httpsig-protocol/): `tag="web-bot-auth"`, the JWK thumbprint `keyid`, the dictionary `Signature-Agent` header, and the `/.well-known/http-message-signatures-directory` location. The identity of an agent is its normalized `Signature-Agent` URL; one documented deviation is that a bare-origin entry fetches the well-known directory. It accepts `@target-uri` in place of `@authority`. The earlier drafts ([architecture-05](https://datatracker.ietf.org/doc/draft-meunier-web-bot-auth-architecture/05/), [directory-05](https://datatracker.ietf.org/doc/draft-meunier-http-message-signatures-directory/05/)) are no longer the target. The verifier still accepts the legacy quoted-string `Signature-Agent` that many deployed agents send, but `sign_request` only produces the dictionary form. See the [CHANGELOG](CHANGELOG.md) for what changed and the breaking changes.
 
 ## What this does not do
 
@@ -154,6 +152,7 @@ Web Bot Auth is an IETF Internet-Draft, not a standard, and may change.
 ## Security
 
 - Version 0.1.0 (the initial commit, never released) let a request's `Signature-Agent` choose the key-directory URL before the signature was verified. It is fixed in 0.1.1; anyone who vendored `web_bot_auth.py` from 0.1.0 should update and check their allowlist entries. Details are in [CHANGELOG.md](CHANGELOG.md#011).
+- Version 0.2.0 binds an agent's identity to its full `Signature-Agent` URL instead of its origin, so tenants on a shared host are distinct identifiers. Allowlist entries from 0.1.1 that carry a path no longer match an agent that sends the bare origin; allowlist both forms or have the agent send the full URL. Details are in [CHANGELOG.md](CHANGELOG.md#020).
 - To report a vulnerability, see [SECURITY.md](SECURITY.md). Please do not open a public issue.
 
 ## Development

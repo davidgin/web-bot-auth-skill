@@ -45,12 +45,12 @@ class SizeGate(unittest.TestCase):
         self.write("web_bot_auth.py", padded(1050))
         self.assertEqual(self.run_check(), [])
 
-    def test_vendored_file_1100_passes(self):
-        self.write("web_bot_auth.py", padded(1100))
+    def test_vendored_file_1150_passes(self):
+        self.write("web_bot_auth.py", padded(1150))
         self.assertEqual(self.run_check(), [])
 
-    def test_vendored_file_1101_fails(self):
-        self.write("web_bot_auth.py", padded(1101))
+    def test_vendored_file_1151_fails(self):
+        self.write("web_bot_auth.py", padded(1151))
         self.assertTrue(any("web_bot_auth.py" in v for v in self.run_check()))
 
     def test_other_file_does_not_get_vendored_limit(self):

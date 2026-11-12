@@ -5,6 +5,7 @@ import base64
 import dataclasses
 import functools
 import json
+import re
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -12,15 +13,47 @@ from concurrent.futures import ThreadPoolExecutor
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
+import web_bot_auth
 from web_bot_auth import (
-    DirectoryKeyResolver, InMemoryNonceStore, NonceStoreError, Outcome, Policy,
-    Request, StaticKeyResolver, Verifier, jwk_thumbprint, parse_dictionary,
-    public_jwk, sign_request, signature_base, WELL_KNOWN_DIRECTORY,
+    DirectoryKeyResolver, InMemoryNonceStore, content_digest_matches, NonceStoreError, Outcome, Policy,
+    Request, StaticKeyResolver, Verifier, jwk_thumbprint, parse_dictionary, parse_directory,
+    normalize_agent_url, public_jwk, sign_request, signature_base, TEST_KEY_THUMBPRINTS,
+    WELL_KNOWN_DIRECTORY,
 )
 
 NOW = 1_800_000_000
 AGENT = "https://agent.example"
 NONCE = "bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U="
+AGENT_ID = AGENT + "/"  # the normalized identifier of AGENT (spec section 3.1)
+LONG_PATH = "https://a.example/" + "k" * (2048 - len("https://a.example/"))
+# Spec section 3.1 table, written by hand: input -> identifier, or None when rejected.
+NORMALIZATION_CASES = (
+    ("HTTPS://Agent.EXAMPLE/K", "https://agent.example/K"),
+    ("https://agent.example:443", "https://agent.example/"),
+    ("https://a.example:/", "https://a.example/"),
+    ("https://a.example:8443/x", "https://a.example:8443/x"),
+    ("https://Agent.Example:443/a/./b/../%7euser/k%2fs.json?v=3", "https://agent.example/a/~user/k%2Fs.json"),
+    ("https://a.example/a/..", "https://a.example/"),
+    ("https://a.example/a/.", "https://a.example/a/"),
+    ("https://a.example/%2E%2E/x", "https://a.example/x"),
+    ("https://%61.example/", "https://a.example/"),
+    ("https://[2001:DB8::1]/", "https://[2001:db8::1]/"),
+    ("https://agent.example.", "https://agent.example./"),
+    ("https://a.example?x=1", "https://a.example/"),
+    ("https://a.example:65535/", "https://a.example:65535/"),
+    (LONG_PATH, LONG_PATH),
+    ("", None), ("agent.example", None), ("http://a.example", None), ("data:x", None),
+    ("https:///k", None), ("https://u@a.example/", None), ("https://a.example/#f", None),
+    ("https://a.example#", None), ("https://a.example:x/", None), ("https://a.example:0/", None),
+    ("https://a.example:0443/", None), ("https://a.example:65536/", None),
+    ("https://a.example:+443/", None), ("https://a.example/%zz", None), ("https://a.example/%4", None),
+    ("https://\u00e4.example/", None), ("https://a.example/a b", None), ("https://a.example/a\tb", None),
+    ("https://a.example/a\x7fb", None), ("https://a.example/a\\b", None), ('https://a.example/a"b', None),
+    ("https://a.example/a{b", None), ("https://a.example/a|b", None), ("https://a.example/a^b", None),
+    ("https://[v1.x]/", None), ("https://[fe80::1%25eth0]/", None), ("https://a.example/[", None),
+    ("https://a.example/k?[", None), ("https://a.ex%2Fample/", None), ("https://a!.example/", None),
+    (LONG_PATH + "k", None),
+)
 
 
 def clock():
@@ -46,6 +79,20 @@ class Fixture(unittest.TestCase):
     def outcome(self, req, verifier=None):
         return (verifier or self.verifier).verify(req)
 
+    # SC-005: every directory attack test checks these after each request.
+    def assertFetchedSubset(self, fetched, resolver):
+        self.assertLessEqual(set(fetched), set(getattr(resolver, "_fetch_urls", {}).values()))
+
+    def assertNotMisattributed(self, result, resolver, resolved=None):
+        # ``resolved`` is the ResolvedKey behind ``result``, when the test captured it.
+        if resolved is not None and not resolved.attributed:  # spec 3.3: no URL, no operator or trust
+            self.assertEqual((result.operator, result.outcome == Outcome.VERIFIED), (None, False))
+        if result.operator is not None:  # the operator's own resolution must hold the key
+            static = getattr(resolver, "_keys", None)
+            keys = static.get(result.operator, {}) if static is not None \
+                else getattr(resolver, "_cache", {}).get(result.operator, ({},))[0]
+            self.assertIn(result.keyid, keys, f"{result.keyid} credited to {result.operator}")
+
 
 class Accepts(Fixture):
     def test_verified_and_bound(self):
@@ -53,21 +100,28 @@ class Accepts(Fixture):
         self.assertEqual(r.outcome, Outcome.VERIFIED, r.reason)
         self.assertTrue(r.binds_request)
         self.assertTrue(r.replay_protected)
-        self.assertEqual(r.operator, AGENT)
+        self.assertEqual(r.operator, AGENT_ID)
 
     def test_post_with_body(self):
         r = self.outcome(self.signed("POST", body=b'{"qty": 2}'))
         self.assertEqual(r.outcome, Outcome.VERIFIED, r.reason)
         self.assertTrue(r.binds_request)
 
-    def test_draft05_dictionary_signature_agent(self):
-        r = self.outcome(self.signed(agent_as_dictionary=True))
+    def test_dictionary_signature_agent_is_default(self):
+        req = self.signed()
+        self.assertEqual(req.header("signature-agent"), f'sig1="{AGENT}"')
+        r = self.outcome(req)
         self.assertEqual(r.outcome, Outcome.VERIFIED, r.reason)
 
     def test_minimal_draft_coverage_verifies_but_is_unbound(self):
         r = self.outcome(self.signed(components=("@authority", "signature-agent")))
         self.assertEqual(r.outcome, Outcome.VERIFIED, r.reason)
         self.assertFalse(r.binds_request)
+
+    def test_target_uri_without_authority_verifies(self):
+        r = self.outcome(self.signed(components=("@method", "@target-uri", "signature-agent")))
+        self.assertEqual(r.outcome, Outcome.VERIFIED, r.reason)
+        self.assertTrue(r.binds_request)
 
     def test_no_nonce_verifies_but_is_unprotected(self):
         r = self.outcome(self.signed(nonce=None))
@@ -111,16 +165,25 @@ class Rejects(Fixture):
         req = self.signed()
         self.assertOutcome(Request("GET", "https://other.example/items/42", req._headers), Outcome.INVALID)
 
+    def test_target_uri_host_swap_is_invalid(self):
+        req = self.signed(components=("@method", "@target-uri", "signature-agent"))
+        self.assertOutcome(Request("GET", "https://other.example/items/42", req._headers), Outcome.INVALID)
+
+    def test_neither_authority_nor_target_uri_is_invalid(self):
+        req = hand_signed(self.key, f'sig1="{AGENT}"', '"@method" "@path" "signature-agent";key="sig1"')
+        r = self.assertOutcome(req, Outcome.INVALID)
+        self.assertEqual(r.reason, "@authority or @target-uri must be covered")
+
     def test_signature_agent_swap(self):
         req = self.signed()
-        h = [(k, '"https://evil.example"' if k == "signature-agent" else v) for k, v in req._headers]
+        h = [(k, 'sig1="https://evil.example"' if k == "signature-agent" else v) for k, v in req._headers]
         r = self.outcome(Request(req.method, req.url, h))
         self.assertNotEqual(r.outcome, Outcome.VERIFIED)
 
     def test_uncovered_signature_agent(self):
-        req = self.signed(components=("@method", "@authority", "@path"))
-        req = Request(req.method, req.url, req._headers + [("signature-agent", f'"{AGENT}"')])
-        self.assertOutcome(req, Outcome.INVALID)
+        req = hand_signed(self.key, f'"{AGENT}"', '"@method" "@authority" "@path"')
+        r = self.assertOutcome(req, Outcome.INVALID)
+        self.assertEqual(r.reason, "Signature-Agent present but not covered")
 
     def test_expired(self):
         self.assertOutcome(self.signed(created=NOW - 120, expires=NOW - 60), Outcome.EXPIRED)
@@ -207,6 +270,37 @@ class NonceStoreFailure(Fixture):
         self.assertFalse(r.replay_protected)
 
 
+class AgentUrl(unittest.TestCase):
+    """FR-005/FR-007, spec sections 3.1 and 3.2."""
+
+    def test_normalization_table(self):
+        for url, expected in NORMALIZATION_CASES:
+            with self.subTest(url=url[:60]):
+                if expected is None:
+                    with self.assertRaises(ValueError):
+                        normalize_agent_url(url)
+                else:
+                    self.assertEqual(normalize_agent_url(url), expected)
+
+    def test_non_string_rejected(self):
+        for value in (None, b"https://a.example/", 1):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    normalize_agent_url(value)
+
+    def test_directory_entry_fetch_urls(self):
+        entry = web_bot_auth._directory_entry
+        cases = (
+            (AGENT, (AGENT_ID, AGENT + WELL_KNOWN_DIRECTORY)),
+            (AGENT + "/?v=%7e1", (AGENT_ID, AGENT + WELL_KNOWN_DIRECTORY + "?v=~1")),
+            (AGENT + "/a/../k.json?v=%2f", (AGENT + "/k.json", AGENT + "/k.json?v=%2F")),
+            ("https://a.example:8443", ("https://a.example:8443/", "https://a.example:8443" + WELL_KNOWN_DIRECTORY)),
+        )
+        for value, expected in cases:
+            with self.subTest(value=value):
+                self.assertEqual(entry(value), expected)
+
+
 class Directory(Fixture):
     def test_fetches_only_allowlisted(self):
         fetched = []
@@ -231,88 +325,160 @@ class Directory(Fixture):
 
         res = DirectoryKeyResolver([AGENT], fetch=fetch, refetch_interval=60)
         for i in range(5):
-            res.resolve("unknown", AGENT, NOW + i)
+            res.resolve("unknown", AGENT_ID, NOW + i)
         self.assertEqual(len(calls), 1)
 
 
 class DirectoryConfiguration(Fixture):
+    """FR-006/FR-007/FR-008, spec sections 3.2 and 3.3 (scenarios 1-3, 13, 14)."""
+
+    def directory(self, allowlist):
+        fetched = []
+        res = DirectoryKeyResolver(allowlist, fetch=lambda url: (
+            fetched.append(url) or json.dumps(self.jwks).encode(), 600))
+        return res, Verifier(res, clock=clock), fetched
+
     def test_configured_directory_path_and_query_override_request(self):
         for suffix in ("/operator/keys.json", "/operator/keys.json?version=2"):
             with self.subTest(suffix=suffix):
-                configured = AGENT + suffix
-                fetched = []
-
-                def fetch(url):
-                    fetched.append(url)
-                    return json.dumps(self.jwks).encode(), 600
-
-                res = DirectoryKeyResolver([configured], fetch=fetch)
-                verifier = Verifier(res, clock=clock)
-                result = verifier.verify(self.signed(agent=AGENT + "/untrusted?evil=1"))
+                res, verifier, fetched = self.directory([AGENT + suffix])
+                result = verifier.verify(self.signed(agent=AGENT + "/operator/keys.json?evil=1"))
                 self.assertEqual(result.outcome, Outcome.VERIFIED, result.reason)
-                self.assertEqual(result.operator, AGENT)
-                self.assertEqual(res.allowlist, {AGENT})
-                self.assertEqual(fetched, [configured])
+                self.assertEqual(result.operator, AGENT + "/operator/keys.json")
+                self.assertEqual(res.allowlist, {AGENT + "/operator/keys.json"})
+                self.assertEqual(fetched, [AGENT + suffix])
+
+    def test_url_identity_drops_the_query(self):  # scenario 1
+        res, verifier, fetched = self.directory([AGENT + "/keys.json"])
+        result = verifier.verify(self.signed(agent=AGENT + "/keys.json?v=3"))
+        self.assertEqual((result.outcome, result.operator, result.claimed_agent),
+                         (Outcome.VERIFIED, AGENT + "/keys.json", AGENT + "/keys.json"), result.reason)
+        self.assertEqual(fetched, [AGENT + "/keys.json"])
+
+    def test_another_path_on_the_same_host_is_not_credited(self):  # scenario 2
+        for allowlist in ([AGENT + "/keys.json"], [AGENT + "/operator/keys.json?version=2"]):
+            with self.subTest(allowlist=allowlist):
+                res, verifier, fetched = self.directory(allowlist)
+                result = verifier.verify(self.signed(agent=AGENT + "/other.json"))
+                self.assertEqual((result.outcome, result.reason, result.operator, result.claimed_agent),
+                                 (Outcome.UNKNOWN_OPERATOR, "no key for this operator", None,
+                                  AGENT + "/other.json"))
+                self.assertEqual(fetched, [])
+
+    def test_bare_origin_fetches_well_known(self):  # scenario 3
+        res, verifier, fetched = self.directory([AGENT])
+        result = verifier.verify(self.signed(agent=AGENT))
+        self.assertEqual((result.outcome, result.operator), (Outcome.VERIFIED, AGENT_ID), result.reason)
+        self.assertEqual(fetched, [AGENT + WELL_KNOWN_DIRECTORY])
+
+    def test_key_of_one_path_does_not_verify_another(self):
+        res, verifier, fetched = self.directory([AGENT + "/a/keys.json"])
+        result = verifier.verify(self.signed(agent=AGENT + "/b/keys.json"))
+        self.assertEqual((result.outcome, result.operator), (Outcome.UNKNOWN_OPERATOR, None))
+        self.assertEqual(fetched, [])
+
+    def test_explicit_well_known_is_another_identifier(self):  # scenario 13, a documented deviation
+        explicit = AGENT + WELL_KNOWN_DIRECTORY
+        res, verifier, fetched = self.directory([AGENT])
+        result = verifier.verify(self.signed(agent=explicit))
+        self.assertEqual((result.outcome, result.operator), (Outcome.UNKNOWN_OPERATOR, None))
+        self.assertEqual(fetched, [])
+        res, verifier, fetched = self.directory([AGENT, explicit])
+        for agent, operator in ((AGENT, AGENT_ID), (explicit, explicit)):
+            result = verifier.verify(self.signed(agent=agent))
+            self.assertEqual((result.outcome, result.operator), (Outcome.VERIFIED, operator), result.reason)
+        self.assertEqual(fetched, [explicit, explicit])  # two identifiers, two caches (accepted)
+
+    def test_spellings_collapse_but_paths_stay_distinct(self):
+        res, verifier, fetched = self.directory([AGENT + "/k"])
+        for agent in (AGENT + "/a/../k", AGENT + "/%6B", AGENT + "/k"):
+            with self.subTest(agent=agent):
+                result = verifier.verify(self.signed(agent=agent))
+                self.assertEqual((result.outcome, result.operator), (Outcome.VERIFIED, AGENT + "/k"))
+        for agent in (AGENT + "/K", AGENT + "/k/"):
+            with self.subTest(agent=agent):
+                self.assertEqual(verifier.verify(self.signed(agent=agent)).outcome, Outcome.UNKNOWN_OPERATOR)
+        self.assertEqual(fetched, [AGENT + "/k"])
+
+    def test_unsignable_claims_are_invalid_without_fetch(self):
+        res, verifier, fetched = self.directory([AGENT + "/k"])
+        for agent in (AGENT + "/a\\k", AGENT + "/k?[", AGENT + "/k#f", AGENT + "/" + "k" * 2048):
+            with self.subTest(agent=agent[:40]):
+                header = "sig1=" + web_bot_auth.serialize_bare_item(agent)
+                req = hand_signed(self.key, header, '"@authority" "signature-agent";key="sig1"')
+                result = verifier.verify(req)
+                self.assertEqual((result.outcome, result.operator, result.claimed_agent),
+                                 (Outcome.INVALID, None, None))
+        self.assertEqual(fetched, [])
 
     def test_origin_entries_use_normalized_well_known_location(self):
         for entry in (AGENT, AGENT + "/", "https://AGENT.example:443"):
             with self.subTest(entry=entry):
-                fetched = []
-                res = DirectoryKeyResolver([entry], fetch=lambda url: (
-                    fetched.append(url) or json.dumps(self.jwks).encode(), 600))
-                result = Verifier(res, clock=clock).verify(self.signed())
-                self.assertEqual(result.outcome, Outcome.VERIFIED)
+                res, verifier, fetched = self.directory([entry])
+                result = verifier.verify(self.signed())
+                self.assertEqual((result.outcome, result.operator), (Outcome.VERIFIED, AGENT_ID))
                 self.assertEqual(fetched, [AGENT + WELL_KNOWN_DIRECTORY])
 
     def test_configured_root_query_uses_well_known_path(self):
-        fetched = []
-        res = DirectoryKeyResolver([AGENT + "/?version=2"], fetch=lambda url: (
-            fetched.append(url) or json.dumps(self.jwks).encode(), 600))
-        self.assertEqual(Verifier(res, clock=clock).verify(self.signed()).outcome, Outcome.VERIFIED)
+        res, verifier, fetched = self.directory([AGENT + "/?version=2"])
+        self.assertEqual(verifier.verify(self.signed()).outcome, Outcome.VERIFIED)
+        self.assertEqual(res.allowlist, {AGENT_ID})
         self.assertEqual(fetched, [AGENT + WELL_KNOWN_DIRECTORY + "?version=2"])
 
-    def test_conflicting_custom_directories_rejected_in_any_order(self):
-        entries = [AGENT + "/a/keys.json", AGENT + "/b/keys.json"]
-        for allowlist in (set(entries), entries, entries[::-1]):
-            with self.subTest(allowlist=allowlist):
-                with self.assertRaisesRegex(ValueError, "https://agent[.]example"):
-                    DirectoryKeyResolver(allowlist)
+    def test_paths_on_one_host_are_separate_identifiers(self):
+        a, b = AGENT + "/a/keys.json", AGENT + "/b/keys.json"
+        res, verifier, fetched = self.directory([a, b])
+        self.assertEqual(res.allowlist, {a, b})
+        for agent in (a, b, a):
+            self.assertEqual(verifier.verify(self.signed(agent=agent)).operator, agent)
+        self.assertEqual(fetched, [a, b])
 
-    def test_origin_and_custom_directory_conflict_in_any_order(self):
-        entries = [AGENT, AGENT + "/tenant/keys.json"]
+    def test_conflicting_queries_for_one_identifier_rejected_in_any_order(self):
+        entries = [AGENT + "/k?v=1", AGENT + "/k?v=2"]
         for allowlist in (entries, entries[::-1]):
             with self.subTest(allowlist=allowlist):
-                with self.assertRaisesRegex(ValueError, "https://agent[.]example"):
+                with self.assertRaisesRegex(ValueError, "https://agent[.]example/k"):
                     DirectoryKeyResolver(allowlist)
 
     def test_identical_normalized_directories_are_allowed(self):
         entries = ["https://AGENT.example", AGENT]
         for allowlist in (entries, entries[::-1]):
             with self.subTest(allowlist=allowlist):
-                fetched = []
-                res = DirectoryKeyResolver(allowlist, fetch=lambda url: (
-                    fetched.append(url) or json.dumps(self.jwks).encode(), 600))
-                result = Verifier(res, clock=clock).verify(self.signed())
-                self.assertEqual(result.outcome, Outcome.VERIFIED)
-                self.assertEqual(res.allowlist, {AGENT})
+                res, verifier, fetched = self.directory(allowlist)
+                self.assertEqual(verifier.verify(self.signed()).outcome, Outcome.VERIFIED)
+                self.assertEqual(res.allowlist, {AGENT_ID})
                 self.assertEqual(fetched, [AGENT + WELL_KNOWN_DIRECTORY])
 
-    def test_runtime_added_normalized_origin_uses_well_known_directory(self):
-        fetched = []
-        res = DirectoryKeyResolver([], fetch=lambda url: (
-            fetched.append(url) or json.dumps(self.jwks).encode(), 600))
-        verifier = Verifier(res, clock=clock)
-        request = self.signed(agent=AGENT + "/request/keys.json?evil=1")
+    def test_runtime_added_normalized_origin_uses_well_known_directory(self):  # scenario 14
+        res, verifier, fetched = self.directory([])
+        request = self.signed()
         self.assertEqual(verifier.verify(request).outcome, Outcome.UNKNOWN_OPERATOR)
-        self.assertEqual(fetched, [])
-        res.allowlist.add(AGENT)
+        for bad in (lambda: res.allowlist.add(AGENT), lambda: res.allowlist.update([AGENT])):
+            with self.assertRaisesRegex(ValueError, "'https://agent[.]example/'"):
+                bad()
+        with self.assertRaisesRegex(ValueError, "'https://agent[.]example/'"):
+            res.allowlist |= {AGENT}
+        self.assertEqual((res.allowlist, fetched), (set(), []))
+        res.allowlist.add(AGENT_ID)
         self.assertEqual(verifier.verify(request).outcome, Outcome.VERIFIED)
         self.assertEqual(fetched, [AGENT + WELL_KNOWN_DIRECTORY])
+        res.allowlist.discard(AGENT_ID)
+        self.assertEqual(verifier.verify(request).outcome, Outcome.SIGNED_UNTRUSTED)
+        res.allowlist |= {AGENT_ID}
+        res.allowlist.update([AGENT + "/k"])
+        self.assertEqual(res.allowlist, {AGENT_ID, AGENT + "/k"})
+
+    def test_static_keys_normalizing_to_one_identifier_rejected(self):  # parity with FR-008
+        other = {"keys": [public_jwk(Ed25519PrivateKey.generate())]}
+        with self.assertRaisesRegex(ValueError, re.escape(AGENT + "/k")):
+            StaticKeyResolver({AGENT + "/k": self.jwks, AGENT + "/./k?v=1": other})
+        res = StaticKeyResolver({AGENT + "/k": self.jwks, AGENT + "/j": other, None: other})
+        self.assertIsNotNone(res.resolve(jwk_thumbprint(public_jwk(self.key)), AGENT + "/k", NOW))
 
     def test_invalid_directory_configuration_rejected(self):
         for entry in ("", "agent.example", "http://agent.example/keys", "https:///keys",
                       AGENT + "/keys#fragment", "https://user@agent.example/keys",
-                      "https://agent.example:bad/keys"):
+                      "https://agent.example:bad/keys", AGENT + "/a\\k", None):
             with self.subTest(entry=entry):
                 with self.assertRaises(ValueError):
                     DirectoryKeyResolver([entry])
@@ -348,27 +514,59 @@ class DirectorySecurity(Fixture):
         self.assertEqual(self.fetched, [AGENT + WELL_KNOWN_DIRECTORY])
         self.now += 61
 
+    def outcome(self, req, verifier=None):
+        result = super().outcome(req, verifier)
+        self.assertFetchedSubset(self.fetched, self.resolver)
+        self.assertNotMisattributed(result, self.resolver)
+        return result
+
+    def test_sc005_helpers_are_not_vacuous(self):
+        self.warm()
+        kid = jwk_thumbprint(public_jwk(self.attacker))
+        forged = web_bot_auth.Result(Outcome.VERIFIED, operator=AGENT_ID, keyid=kid)
+        with self.assertRaises(AssertionError):
+            self.assertNotMisattributed(forged, self.resolver)
+        static = StaticKeyResolver({AGENT: self.jwks})
+        with self.assertRaises(AssertionError):
+            self.assertNotMisattributed(forged, static)
+        self.assertNotMisattributed(dataclasses.replace(forged, keyid=jwk_thumbprint(public_jwk(self.key))),
+                                    static)
+        with self.assertRaises(AssertionError):
+            self.assertFetchedSubset([self.evil_url], self.resolver)
+        pooled = web_bot_auth.ResolvedKey(self.attacker.public_key(), False, attributed=False)
+        for bad in (dataclasses.replace(forged, operator=None), forged):
+            with self.assertRaises(AssertionError):
+                self.assertNotMisattributed(bad, StaticKeyResolver({None: self.jwks}), pooled)
+
     def test_forged_request_cannot_choose_directory(self):
         self.warm()
         result = self.outcome(self.attack(forged=True))
-        self.assertEqual(result.outcome, Outcome.INVALID)
+        self.assertEqual((result.outcome, result.operator, result.claimed_agent),
+                         (Outcome.UNKNOWN_OPERATOR, None, self.evil_url))
+        self.assertEqual(self.fetched, [AGENT + WELL_KNOWN_DIRECTORY])
+        result = self.outcome(self.attack(AGENT, forged=True))
+        self.assertEqual((result.outcome, result.operator, result.claimed_agent),
+                         (Outcome.INVALID, None, AGENT_ID))
         self.assertEqual(self.fetched, [AGENT + WELL_KNOWN_DIRECTORY] * 2)
 
     def test_attacker_path_cannot_impersonate_warm_operator(self):
         self.warm()
         result = self.outcome(self.attack())
-        self.assertEqual(result.outcome, Outcome.INVALID)
-        self.assertEqual(result.reason, "unknown keyid for allowlisted operator")
+        self.assertEqual((result.outcome, result.reason, result.operator),
+                         (Outcome.UNKNOWN_OPERATOR, "no key for this operator", None))
+        self.assertEqual(self.fetched, [AGENT + WELL_KNOWN_DIRECTORY])
 
     def test_attacker_path_cannot_impersonate_cold_operator(self):
-        for dictionary in (False, True):
-            with self.subTest(dictionary=dictionary):
+        legacy = hand_signed(self.attacker, f'"{self.evil_url}"', '"@authority" "signature-agent"',
+                             url="https://shop.example/x", created=self.now - 1)
+        for name, req in (("legacy", legacy), ("dictionary", self.attack())):
+            with self.subTest(name):
                 self.resolver = DirectoryKeyResolver([AGENT], fetch=self.fetch)
                 self.verifier = Verifier(self.resolver, clock=lambda: self.now)
-                result = self.outcome(self.attack(agent_as_dictionary=dictionary))
-                self.assertEqual(result.outcome, Outcome.INVALID)
-                self.assertEqual(result.operator, AGENT)
-        self.assertEqual(self.fetched, [AGENT + WELL_KNOWN_DIRECTORY] * 2)
+                result = self.outcome(req)
+                self.assertEqual((result.outcome, result.reason, result.operator),
+                                 (Outcome.UNKNOWN_OPERATOR, "no key for this operator", None))
+        self.assertEqual(self.fetched, [])
 
     def test_poison_attempt_does_not_lock_out_operator(self):
         self.warm()
@@ -376,12 +574,14 @@ class DirectorySecurity(Fixture):
         self.assertEqual(self.outcome(self.signed()).outcome, Outcome.VERIFIED)
 
     def test_request_paths_and_queries_do_not_change_configured_location(self):
-        for agent in (self.evil_url + "?key=evil#fragment", AGENT + "/?evil=1"):
+        # A path claim is another identifier (-01 section 5.5); a query is not part of it.
+        for agent, expected in ((self.evil_url + "?key=evil", Outcome.UNKNOWN_OPERATOR),
+                                (AGENT + "/?evil=1", Outcome.VERIFIED)):
             with self.subTest(agent=agent):
                 self.resolver = DirectoryKeyResolver([AGENT], fetch=self.fetch)
                 self.verifier = Verifier(self.resolver, clock=lambda: self.now)
-                self.assertEqual(self.outcome(self.signed(agent=agent)).outcome, Outcome.VERIFIED)
-        self.assertEqual(self.fetched, [AGENT + WELL_KNOWN_DIRECTORY] * 2)
+                self.assertEqual(self.outcome(self.signed(agent=agent)).outcome, expected)
+        self.assertEqual(self.fetched, [AGENT + WELL_KNOWN_DIRECTORY])
 
     def test_untrusted_spam_does_not_accumulate_resolver_state(self):
         before = {k: dict(v) for k, v in vars(self.resolver).items() if isinstance(v, dict)}
@@ -406,13 +606,17 @@ class DirectorySecurity(Fixture):
 
     def test_malformed_agent_does_not_fetch_or_change_state(self):
         req = self.attack()
+        cases = [(h, Request(req.method, req.url, [(k, h if k == "signature-agent" else v)
+                                                   for k, v in req._headers]))
+                 for h in ('sig1="http://agent.example"', 'sig1="not a URL"',
+                           'sig1="https://agent.example:bad"')]
+        cases += [(h, hand_signed(self.attacker, h, '"@authority" "signature-agent"',
+                                  url="https://shop.example/x", created=self.now - 1))
+                  for h in ('""', '" "', 'sig1="unterminated', 'sig1=?1')]
         before = {k: dict(v) for k, v in vars(self.resolver).items() if isinstance(v, dict)}
-        for header in ('""', '" "', 'sig1="unterminated', 'sig1=?1',
-                       '"http://agent.example"', '"not a URL"', '"https://agent.example:bad"'):
+        for header, bad in cases:
             with self.subTest(header=header):
-                headers = [(k, header if k == "signature-agent" else v) for k, v in req._headers]
-                self.assertEqual(self.outcome(Request(req.method, req.url, headers)).outcome,
-                                 Outcome.INVALID)
+                self.assertEqual(self.outcome(bad).outcome, Outcome.INVALID)
                 self.assertEqual(self.fetched, [])
                 self.assertEqual({k: dict(v) for k, v in vars(self.resolver).items()
                                   if isinstance(v, dict)}, before)
@@ -420,7 +624,8 @@ class DirectorySecurity(Fixture):
     def test_missing_agent_with_empty_allowlist_does_not_fetch(self):
         self.resolver = DirectoryKeyResolver([], fetch=self.fetch)
         self.verifier = Verifier(self.resolver, clock=clock)
-        self.assertEqual(self.outcome(self.signed(agent=None)).outcome, Outcome.UNKNOWN_OPERATOR)
+        req = hand_signed(self.key, None, '"@method" "@authority" "@path"')
+        self.assertEqual(self.outcome(req).outcome, Outcome.UNKNOWN_OPERATOR)
         self.assertEqual(self.fetched, [])
         self.assertEqual(self.resolver._cache, {})
         self.assertEqual(self.resolver._last_fetch, {})
@@ -429,11 +634,13 @@ class DirectorySecurity(Fixture):
         kid = jwk_thumbprint(public_jwk(self.key))
         for i in range(100):
             result = self.outcome(self.attack(self.evil_url + f"?key={i}", forged=True, keyid=kid))
-            self.assertEqual(result.outcome, Outcome.INVALID)
-            self.assertEqual(result.reason, "signature does not verify")
+            self.assertEqual((result.outcome, result.reason),
+                             (Outcome.UNKNOWN_OPERATOR, "no key for this operator"))
+            result = self.outcome(self.attack(AGENT + f"/?key={i}", forged=True, keyid=kid))
+            self.assertEqual((result.outcome, result.reason), (Outcome.INVALID, "signature does not verify"))
         self.assertEqual(self.fetched, [AGENT + WELL_KNOWN_DIRECTORY])
-        self.assertEqual(set(self.resolver._cache), {AGENT})
-        self.assertEqual(set(self.resolver._last_fetch), {AGENT})
+        self.assertEqual(set(self.resolver._cache), {AGENT_ID})
+        self.assertEqual(set(self.resolver._last_fetch), {AGENT_ID})
         self.assertFalse(hasattr(self.resolver, "_agent_urls"))
         self.assertFalse(hasattr(self.resolver, "register_agent_url"))
 
@@ -455,9 +662,9 @@ class DirectoryRefetch(Fixture):
                 res = DirectoryKeyResolver([AGENT], fetch=fetch)
                 kid = jwk_thumbprint(public_jwk(self.key))
                 for offset in (0, 0, 1, 59.999):
-                    self.assertIsNone(res.resolve(kid, AGENT, NOW + offset))
+                    self.assertIsNone(res.resolve(kid, AGENT_ID, NOW + offset))
                 self.assertEqual(calls, [AGENT + WELL_KNOWN_DIRECTORY])
-                self.assertTrue(res.resolve(kid, AGENT, NOW + 60).trusted)
+                self.assertTrue(res.resolve(kid, AGENT_ID, NOW + 60).trusted)
                 self.assertEqual(calls, [AGENT + WELL_KNOWN_DIRECTORY] * 2)
 
     def test_failed_fetch_limit_is_per_operator(self):
@@ -469,7 +676,7 @@ class DirectoryRefetch(Fixture):
 
         other = "https://other.example"
         res = DirectoryKeyResolver([AGENT, other], fetch=fetch)
-        for operator in (AGENT, other, AGENT, other):
+        for operator in (AGENT_ID, other + "/", AGENT_ID, other + "/"):
             self.assertIsNone(res.resolve("unknown", operator, NOW))
         self.assertEqual(calls, [AGENT + WELL_KNOWN_DIRECTORY, other + WELL_KNOWN_DIRECTORY])
 
@@ -511,6 +718,41 @@ class DirectoryRefetch(Fixture):
                 expected = Outcome.UNKNOWN_OPERATOR if fails else Outcome.VERIFIED
                 self.assertEqual(result.outcome, expected)
 
+    def test_identifiers_on_one_host_reserve_their_own_attempt(self):
+        a, b = AGENT + "/a", AGENT + "/b"
+        calls, lock, started, release = [], threading.Lock(), threading.Semaphore(0), threading.Event()
+
+        def fetch(url):
+            with lock:
+                calls.append(url)
+            started.release()
+            if not release.wait(5):
+                raise TimeoutError("test did not release fetch")
+            if url == a:
+                raise TimeoutError("directory timeout")
+            return json.dumps(self.jwks).encode(), 600
+
+        res = DirectoryKeyResolver([a, b], fetch=fetch)
+        kid = jwk_thumbprint(public_jwk(self.key))
+        barrier = threading.Barrier(16)
+
+        def cold(identifier):
+            barrier.wait(5)
+            return res.resolve(kid, identifier, NOW)
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            futures = [pool.submit(cold, i) for i in (a, b) * 8]
+            try:
+                self.assertTrue(started.acquire(timeout=2) and started.acquire(timeout=2))
+            finally:
+                release.set()
+            for f in futures:
+                f.result(timeout=5)
+        self.assertEqual(sorted(calls), [a, b])  # one attempt each, not one per host
+        self.assertTrue(res.resolve(kid, b, NOW + 1).trusted)  # a's failure did not limit b
+        self.assertIsNone(res.resolve(kid, a, NOW + 1))
+        self.assertEqual(len(calls), 2)
+
     def test_warm_cache_survives_failed_rotation_and_limits_unknown_keyids(self):
         calls = []
 
@@ -522,11 +764,79 @@ class DirectoryRefetch(Fixture):
 
         res = DirectoryKeyResolver([AGENT], fetch=fetch)
         kid = jwk_thumbprint(public_jwk(self.key))
-        self.assertTrue(res.resolve(kid, AGENT, NOW).trusted)
+        self.assertTrue(res.resolve(kid, AGENT_ID, NOW).trusted)
         for i in range(20):
-            self.assertIsNone(res.resolve(f"unknown-{i}", AGENT, NOW + 61))
-        self.assertTrue(res.resolve(kid, AGENT, NOW + 301).trusted)
+            self.assertIsNone(res.resolve(f"unknown-{i}", AGENT_ID, NOW + 61))
+        self.assertTrue(res.resolve(kid, AGENT_ID, NOW + 301).trusted)
         self.assertEqual(calls, [AGENT + WELL_KNOWN_DIRECTORY] * 3)
+
+    # -01 section 6.10: only a 200 that is a JWKS is evidence about the keys.
+    NON_JWKS = (b'{}', b'{"keys": {}}', b'{"error": "x"}', b'[]', b'"x"', b'null',
+                b'{"keys": null}', b'{"keys": "x"}')
+
+    def _warm_then_refresh_with(self, refreshed):
+        calls = []
+
+        def fetch(url):
+            calls.append(url)
+            if len(calls) == 1:
+                return json.dumps(self.jwks).encode(), 300
+            if isinstance(refreshed, Exception):
+                raise refreshed
+            return refreshed, 300
+
+        res = DirectoryKeyResolver([AGENT], fetch=fetch)
+        kid = jwk_thumbprint(public_jwk(self.key))
+        self.assertTrue(res.resolve(kid, AGENT_ID, NOW).trusted)
+        return res, kid, calls
+
+    def test_non_jwks_refresh_keeps_cached_keys(self):
+        for body in self.NON_JWKS:
+            with self.subTest(body=body):
+                res, kid, calls = self._warm_then_refresh_with(body)
+                found = res.resolve(kid, AGENT_ID, NOW + 301)
+                self.assertEqual(len(calls), 2)  # the refresh really happened
+                self.assertIsNotNone(found)
+                self.assertTrue(found.trusted)
+
+    def test_fetch_error_while_warm_keeps_cached_keys(self):
+        res, kid, calls = self._warm_then_refresh_with(TimeoutError("offline"))
+        self.assertTrue(res.resolve(kid, AGENT_ID, NOW + 301).trusted)
+        self.assertEqual(len(calls), 2)
+
+    def test_add_untrusted_directory_rejects_non_jwks_and_keeps_previous_entry(self):
+        res = DirectoryKeyResolver([])
+        res.add_untrusted_directory(AGENT, self.jwks, ttl=60, now=NOW)
+        kid = jwk_thumbprint(public_jwk(self.key))
+        for body in self.NON_JWKS:
+            with self.subTest(body=body):
+                with self.assertRaises(ValueError):
+                    res.add_untrusted_directory(AGENT, body, ttl=60, now=NOW + 1)
+                self.assertIsNotNone(res.resolve(kid, AGENT_ID, NOW + 2))
+
+    def test_non_jwks_refresh_still_counts_as_an_attempt(self):
+        res, kid, calls = self._warm_then_refresh_with(b'{"error": "x"}')
+        self.assertTrue(res.resolve(kid, AGENT_ID, NOW + 301).trusted)  # refresh fails, copy kept
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(res.resolve(kid, AGENT_ID, NOW + 302).trusted)
+        self.assertIsNone(res.resolve("unknown", AGENT_ID, NOW + 303))
+        self.assertEqual(len(calls), 2)  # inside refetch_interval: no extra fetch
+
+    def test_valid_directory_without_key_evicts(self):
+        res, kid, calls = self._warm_then_refresh_with(b'{"keys": []}')
+        self.assertIsNone(res.resolve(kid, AGENT_ID, NOW + 301))
+        self.assertEqual(len(calls), 2)
+
+    def test_parse_directory_rejects_non_jwks(self):
+        for body in self.NON_JWKS + (b"not json",):
+            with self.subTest(body=body):
+                with self.assertRaises(ValueError):
+                    parse_directory(body)
+        self.assertEqual(parse_directory(b'{"keys": []}'), {})
+
+    def test_static_resolver_rejects_non_jwks(self):
+        with self.assertRaises(ValueError):
+            StaticKeyResolver({AGENT: {}})
 
 
 class DirectoryUnavailable(Fixture):
@@ -557,7 +867,7 @@ class DirectoryUnavailable(Fixture):
         self.assertEqual(result.outcome, Outcome.UNKNOWN_OPERATOR, result.reason)
         self.assertEqual(result.reason, "key directory unavailable")
         self.assertFalse(result.hostile)
-        self.assertEqual(result.operator, AGENT)
+        self.assertEqual((result.operator, result.claimed_agent), (None, AGENT_ID))
 
     def test_failed_cold_fetch_is_not_hostile_and_stays_rate_limited(self):
         v = self.verifier_for(DirectoryKeyResolver([AGENT], fetch=self.fetch))
@@ -626,7 +936,7 @@ class ResolverExtensionPoints(Fixture):
                 return None if keyid == kid else super().resolve(keyid, operator, now)
 
         res = Revoking([AGENT], fetch=lambda url: (json.dumps(self.jwks).encode(), 600))
-        res.resolve("warm-the-cache", AGENT, NOW)  # a cold cache would read as unavailable
+        res.resolve("warm-the-cache", AGENT_ID, NOW)  # a cold cache would read as unavailable
         r = Verifier(res, clock=clock).verify(self.signed())
         self.assertEqual((r.outcome, r.reason), (Outcome.INVALID, "unknown keyid for allowlisted operator"))
 
@@ -674,7 +984,7 @@ class ResolverExtensionPoints(Fixture):
     def test_instance_patched_resolve_can_revoke_with_fresh_cache(self):
         kid = jwk_thumbprint(public_jwk(self.key))
         res = self.directory()
-        res.resolve("warm-the-cache", AGENT, NOW)
+        res.resolve("warm-the-cache", AGENT_ID, NOW)
         orig = res.resolve
         res.resolve = lambda k, o, n: None if k == kid else orig(k, o, n)
         r = Verifier(res, clock=clock).verify(self.signed())
@@ -742,15 +1052,15 @@ class DirectoryUnavailableFlag(Fixture):
 
     def test_cold_cache_is_unavailable_without_fetching(self):
         res = self.make()
-        self.assertTrue(res.directory_unavailable(AGENT, NOW))
+        self.assertTrue(res.directory_unavailable(AGENT_ID, NOW))
         self.assertEqual((self.calls, res._cache, res._last_fetch), ([], {}, {}))
 
     def test_fresh_cache_is_available_and_expired_cache_is_not(self):
         res = self.make()
-        res.resolve("x", AGENT, NOW)
+        res.resolve("x", AGENT_ID, NOW)
         before = dict(res._cache)
-        self.assertFalse(res.directory_unavailable(AGENT, NOW + 299))
-        self.assertTrue(res.directory_unavailable(AGENT, NOW + 300))
+        self.assertFalse(res.directory_unavailable(AGENT_ID, NOW + 299))
+        self.assertTrue(res.directory_unavailable(AGENT_ID, NOW + 300))
         self.assertEqual((len(self.calls), res._cache), (1, before))
 
     def test_not_allowlisted_or_missing_operator_is_never_unavailable(self):
@@ -760,72 +1070,241 @@ class DirectoryUnavailableFlag(Fixture):
 
     def test_removed_operator_is_not_unavailable(self):
         res = self.make()
-        res.resolve("x", AGENT, NOW)
-        res.allowlist.discard(AGENT)
-        self.assertFalse(res.directory_unavailable(AGENT, NOW + 300))
+        res.resolve("x", AGENT_ID, NOW)
+        res.allowlist.discard(AGENT_ID)
+        self.assertFalse(res.directory_unavailable(AGENT_ID, NOW + 300))
 
     def test_fetch_completing_between_resolve_and_flag_never_trusts(self):
         res = self.make()
         kid = jwk_thumbprint(public_jwk(self.key))
         orig = res.resolve
         res.fetch = lambda url: (_ for _ in ()).throw(TimeoutError("down"))
-        got = orig(kid, AGENT, NOW)  # cold and failing: no key
+        got = orig(kid, AGENT_ID, NOW)  # cold and failing: no key
         res.fetch = lambda url: (json.dumps({"keys": []}).encode(), 600)
         res._last_fetch.clear()
-        res._refresh(AGENT, NOW, force=False)  # a concurrent fetch lands now
+        res._refresh(AGENT_ID, NOW, force=False)  # a concurrent fetch lands now
         self.assertIsNone(got)
-        self.assertFalse(res.directory_unavailable(AGENT, NOW))  # worst case: INVALID, never a key
+        self.assertFalse(res.directory_unavailable(AGENT_ID, NOW))  # worst case: INVALID, never a key
 
 
 class DirectoryTrust(Fixture):
+    """Trust, removal and redistributed keys (FR-014, FR-021, spec section 3.7); SC-005 in every test."""
+    LIST = "https://lists.example/bots.json"
+
+    def setUp(self):
+        super().setUp()
+        self.fetched = []
+        self.kid = jwk_thumbprint(public_jwk(self.key))
+        self.other = {"keys": [public_jwk(Ed25519PrivateKey.generate())]}
+
+    def directory(self, *bodies, ttl=600, **kw):
+        """Allowlist [AGENT]; fetches serve ``bodies`` in turn (the last repeats); None fails."""
+        queue = list(bodies)
+
+        def fetch(url):
+            self.fetched.append(url)
+            body = queue.pop(0) if len(queue) > 1 else queue[0]
+            if body is None:
+                raise TimeoutError("down")
+            return json.dumps(body).encode(), ttl
+        return DirectoryKeyResolver([AGENT], fetch=fetch, **kw)
+
+    def verify(self, res, req, now=NOW):
+        seen, resolve = [], res.resolve
+        res.resolve = lambda *a: seen.append(resolve(*a)) or seen[-1]
+        try:
+            result = Verifier(res, clock=lambda: now).verify(req)
+        finally:
+            del res.resolve
+        self.assertFetchedSubset(self.fetched, res)
+        self.assertNotMisattributed(result, res, seen[-1] if seen else None)
+        return result
+
+    def signed_at(self, now, **kw):
+        return self.signed(created=now - 1, expires=now + 59, **kw)
+
     def test_removed_operator_cached_key_is_untrusted(self):
-        calls = []
-        res = DirectoryKeyResolver([AGENT], fetch=lambda url: (
-            calls.append(url) or json.dumps(self.jwks).encode(), 600))
-        verifier = Verifier(res, clock=clock)
+        res = self.directory(self.jwks)
         request = self.signed()
-        self.assertEqual(verifier.verify(request).outcome, Outcome.VERIFIED)
-        res.allowlist.discard(AGENT)
-        self.assertFalse(res.is_allowlisted(AGENT))
-        self.assertEqual(verifier.verify(request).outcome, Outcome.SIGNED_UNTRUSTED)
-        self.assertEqual(calls, [AGENT + WELL_KNOWN_DIRECTORY])
-        res.allowlist.add(AGENT)
-        self.assertEqual(verifier.verify(request).outcome, Outcome.VERIFIED)
-        self.assertEqual(calls, [AGENT + WELL_KNOWN_DIRECTORY])
+        self.assertEqual(self.verify(res, request).outcome, Outcome.VERIFIED)
+        res.allowlist.discard(AGENT_ID)
+        self.assertFalse(res.is_allowlisted(AGENT_ID))
+        self.assertEqual(self.verify(res, request).outcome, Outcome.SIGNED_UNTRUSTED)
+        res.allowlist.add(AGENT_ID)
+        self.assertEqual(self.verify(res, request).outcome, Outcome.VERIFIED)
+        self.assertEqual(self.fetched, [AGENT + WELL_KNOWN_DIRECTORY])
 
     def test_removed_operator_expired_cache_cannot_be_used(self):
-        res = DirectoryKeyResolver([AGENT], fetch=lambda url: (json.dumps(self.jwks).encode(), 300))
-        kid = jwk_thumbprint(public_jwk(self.key))
-        self.assertTrue(res.resolve(kid, AGENT, NOW).trusted)
+        res = self.directory(self.jwks, ttl=300)
+        self.assertTrue(res.resolve(self.kid, AGENT_ID, NOW).trusted)
         res.allowlist.clear()
-        self.assertFalse(res.resolve(kid, AGENT, NOW + 299.999).trusted)
-        self.assertIsNone(res.resolve(kid, AGENT, NOW + 300))
+        self.assertFalse(res.resolve(self.kid, AGENT_ID, NOW + 299.999).trusted)
+        self.assertIsNone(res.resolve(self.kid, AGENT_ID, NOW + 300))
+        self.assertFetchedSubset(self.fetched, res)
 
     def test_operator_removed_during_fetch_is_not_trusted(self):
         def fetch(url):
-            res.allowlist.discard(AGENT)
+            self.fetched.append(url)
+            res.allowlist.discard(AGENT_ID)
             return json.dumps(self.jwks).encode(), 600
 
         res = DirectoryKeyResolver([AGENT], fetch=fetch)
-        result = Verifier(res, clock=clock).verify(self.signed())
-        self.assertEqual(result.outcome, Outcome.SIGNED_UNTRUSTED)
+        self.assertEqual(self.verify(res, self.signed()).outcome, Outcome.SIGNED_UNTRUSTED)
 
     def test_removed_operator_with_expired_cache_is_unknown_not_unavailable(self):
-        res = DirectoryKeyResolver([AGENT], fetch=lambda url: (json.dumps(self.jwks).encode(), 300))
-        kid = jwk_thumbprint(public_jwk(self.key))
-        self.assertTrue(res.resolve(kid, AGENT, NOW).trusted)
-        res.allowlist.discard(AGENT)
-        self.assertFalse(res.directory_unavailable(AGENT, NOW + 300))
-        r = Verifier(res, clock=lambda: NOW + 300).verify(self.signed(created=NOW + 299, expires=NOW + 359))
+        res = self.directory(self.jwks, ttl=300)
+        self.assertTrue(res.resolve(self.kid, AGENT_ID, NOW).trusted)
+        res.allowlist.discard(AGENT_ID)
+        self.assertFalse(res.directory_unavailable(AGENT_ID, NOW + 300))
+        r = self.verify(res, self.signed_at(NOW + 300), NOW + 300)
         self.assertEqual((r.outcome, r.reason), (Outcome.UNKNOWN_OPERATOR, "no key for this operator"))
 
     def test_background_directory_stays_untrusted_and_expires(self):
-        res = DirectoryKeyResolver([])
-        res.add_untrusted_directory(AGENT, self.jwks, ttl=60, now=NOW)
-        kid = jwk_thumbprint(public_jwk(self.key))
-        self.assertFalse(res.resolve(kid, AGENT, NOW).trusted)
-        self.assertIsNone(res.resolve("unknown", AGENT, NOW))
-        self.assertIsNone(res.resolve(kid, AGENT, NOW + 60))
+        # SC-008: re-specified for -01; keys carry no URL unless the caller fetched them.
+        for fetched, operator in ((False, None), (True, AGENT_ID)):
+            with self.subTest(fetched=fetched):
+                res = DirectoryKeyResolver([], fetch=self.fetched.append)
+                res.add_untrusted_directory(AGENT, self.jwks, ttl=60, now=NOW, fetched=fetched)
+                hit = res.resolve(self.kid, AGENT_ID, NOW)
+                self.assertEqual((hit.trusted, hit.attributed), (False, fetched))
+                self.assertIsNone(res.resolve("unknown", AGENT_ID, NOW))
+                self.assertIsNone(res.resolve(self.kid, AGENT_ID, NOW + 60))
+                r = self.verify(res, self.signed())
+                self.assertEqual((r.outcome, r.operator), (Outcome.SIGNED_UNTRUSTED, operator))
+                self.assertEqual(self.fetched, [])
+
+    def test_redistributed_list_carries_no_url(self):  # scenario 9
+        res = DirectoryKeyResolver([], fetch=self.fetched.append)
+        res.add_untrusted_directory(AGENT, self.jwks, now=NOW)
+        r = self.verify(res, self.signed())
+        self.assertEqual((r.outcome, r.operator, r.keyid, r.claimed_agent),
+                         (Outcome.SIGNED_UNTRUSTED, None, self.kid, AGENT_ID))
+
+    def test_fetched_list_is_credited_to_its_url(self):
+        res = DirectoryKeyResolver([], fetch=self.fetched.append)
+        res.add_untrusted_directory(AGENT + "?v=2", self.jwks, now=NOW, fetched=True)
+        r = self.verify(res, self.signed())
+        self.assertEqual((r.outcome, r.operator), (Outcome.SIGNED_UNTRUSTED, AGENT_ID))
+
+    def test_unattributed_keys_verify_for_another_or_no_url_never_trusted(self):
+        res = self.directory(self.jwks)
+        res.add_untrusted_directory(self.LIST, self.jwks, now=NOW)
+        for req in (self.signed(agent="https://stranger.example"),
+                    hand_signed(self.key, None, '"@authority"'),
+                    hand_signed(self.key, f'agent2="{AGENT}"', '"@authority" "signature-agent";key="agent2"')):
+            r = self.verify(res, req)
+            self.assertEqual((r.outcome, r.operator), (Outcome.SIGNED_UNTRUSTED, None), r.reason)
+        self.assertEqual(self.fetched, [])
+
+    def test_removal_wins_over_unattributed_pool(self):  # scenario 12, FR-021
+        res = self.directory(self.other)
+        res.add_untrusted_directory(self.LIST, self.jwks, now=NOW)
+        r = self.verify(res, self.signed())
+        self.assertEqual((r.outcome, r.reason, r.operator),
+                         (Outcome.INVALID, "unknown keyid for allowlisted operator", None))
+
+    def test_unavailable_directory_falls_back_to_pool(self):  # scenario 12, second half
+        res = self.directory(None)
+        res.add_untrusted_directory(self.LIST, self.jwks, now=NOW)
+        r = self.verify(res, self.signed())
+        self.assertEqual((r.outcome, r.operator), (Outcome.SIGNED_UNTRUSTED, None), r.reason)
+        res = self.directory(self.other, ttl=300, refetch_interval=1000)  # warm, then expired
+        res.add_untrusted_directory(self.LIST, self.jwks, now=NOW)
+        self.assertEqual(self.verify(res, self.signed()).outcome, Outcome.INVALID)
+        r = self.verify(res, self.signed_at(NOW + 300), NOW + 300)  # refetch rate-limited
+        self.assertEqual((r.outcome, r.operator), (Outcome.SIGNED_UNTRUSTED, None), r.reason)
+        self.assertEqual(len(self.fetched), 2)
+
+    def test_refresh_without_key_is_not_undone_by_pool(self):
+        res = self.directory(self.jwks, self.other, ttl=300)
+        res.add_untrusted_directory(self.LIST, self.jwks, now=NOW)
+        self.assertEqual(self.verify(res, self.signed()).outcome, Outcome.VERIFIED)
+        r = self.verify(res, self.signed_at(NOW + 301), NOW + 301)
+        self.assertEqual((r.outcome, r.reason), (Outcome.INVALID, "unknown keyid for allowlisted operator"))
+        self.assertEqual(len(self.fetched), 2)
+
+    def test_pools_replace_per_source_and_expire_on_their_own_ttl(self):
+        res = DirectoryKeyResolver([], fetch=self.fetched.append)
+        new = {"keys": [public_jwk(Ed25519PrivateKey.generate())]}
+        new_kid = jwk_thumbprint(new["keys"][0])
+        res.add_untrusted_directory(self.LIST, self.jwks, ttl=60, now=NOW)
+        res.add_untrusted_directory(self.LIST, new, ttl=60, now=NOW)  # same source: replaced
+        self.assertIsNone(res.resolve(self.kid, None, NOW))
+        res.add_untrusted_directory("https://other.example/list", self.jwks, ttl=120, now=NOW)
+        for now, live in ((NOW + 59.999, {self.kid, new_kid}), (NOW + 60, {self.kid}),
+                          (NOW + 119.999, {self.kid}), (NOW + 120, set())):
+            got = {k for k in (self.kid, new_kid) if res.resolve(k, None, now) is not None}
+            self.assertEqual(got, live, now)
+        self.assertEqual(self.verify(res, self.signed()).outcome, Outcome.SIGNED_UNTRUSTED)
+        self.assertFetchedSubset(self.fetched, res)
+
+    def test_allowlisting_after_a_fetched_untrusted_entry_uses_the_real_directory(self):
+        # The cached untrusted entry must not hide the newly allowlisted directory until its ttl.
+        for served, held, outcome in ((self.other, self.jwks, Outcome.INVALID),
+                                      (self.jwks, self.jwks, Outcome.VERIFIED)):
+            with self.subTest(outcome=outcome):
+                self.fetched.clear()
+                res = self.directory(served)
+                res.allowlist.discard(AGENT_ID)
+                res.add_untrusted_directory(AGENT, held, ttl=3600, now=NOW, fetched=True)
+                res.allowlist.add(AGENT_ID)
+                r = self.verify(res, self.signed())
+                self.assertEqual(r.outcome, outcome, r.reason)
+                self.assertEqual(len(self.fetched), 1)
+
+    def test_allowlisted_url_cannot_be_added(self):
+        res = self.directory(self.jwks)
+        for fetched in (False, True):
+            with self.subTest(fetched=fetched):
+                with self.assertRaises(ValueError):
+                    res.add_untrusted_directory(AGENT, self.jwks, now=NOW, fetched=fetched)
+        self.assertEqual(self.verify(res, self.signed()).outcome, Outcome.VERIFIED)
+
+    def test_concurrent_re_add_never_shows_a_mixed_or_missing_set(self):
+        res = DirectoryKeyResolver([], fetch=self.fetched.append)
+        extra = [public_jwk(Ed25519PrivateKey.generate()) for _ in range(2)]
+        sets = [{"keys": self.jwks["keys"] + [jwk]} for jwk in extra]
+        kids = [jwk_thumbprint(jwk) for jwk in extra]
+        res.add_untrusted_directory(self.LIST, sets[0], now=NOW)
+        start, errors = threading.Barrier(9), []
+
+        def reader():  # self.kid is in both sets, so a miss means a missing (partial) set
+            start.wait()
+            for _ in range(300):
+                hit = res.resolve(self.kid, None, NOW)
+                if hit is None or public_jwk(hit.key) != self.jwks["keys"][0]:
+                    errors.append(hit)
+
+        def writer():
+            start.wait()
+            for i in range(300):
+                res.add_untrusted_directory(self.LIST, sets[i % 2], now=NOW)
+
+        threads = [threading.Thread(target=reader) for _ in range(8)] + [threading.Thread(target=writer)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        self.assertEqual([res.resolve(k, None, NOW) is not None for k in kids], [False, True])  # not merged
+        self.assertEqual(self.verify(res, self.signed()).outcome, Outcome.SIGNED_UNTRUSTED)
+
+    def test_unattributed_resolved_key_forces_untrusted_and_no_operator(self):
+        class Unattributed(StaticKeyResolver):
+            def resolve(self, keyid, operator, now):
+                r = super().resolve(keyid, operator, now)
+                return r and web_bot_auth.ResolvedKey(r.key, True, attributed=False)
+
+        r = self.verify(Unattributed({AGENT: self.jwks}), self.signed())
+        self.assertEqual((r.outcome, r.operator), (Outcome.SIGNED_UNTRUSTED, None))
+
+    def test_ignored_member_with_directory_resolver_is_unknown_operator(self):  # scenario 7, R18
+        res = self.directory(self.jwks)
+        req = hand_signed(self.key, f'agent2="{AGENT}"', '"@authority" "signature-agent";key="agent2"', "sig2")
+        r = self.verify(res, req)
+        self.assertEqual((r.outcome, r.reason, r.operator, r.claimed_agent),
+                         (Outcome.UNKNOWN_OPERATOR, "no key for this operator", None, None))
+        self.assertEqual(self.fetched, [])
 
 
 class Conformance(unittest.TestCase):
@@ -848,6 +1327,242 @@ MC4CAQAwBQYDK2VwBCIEIJ+DYvh6SEqVTm50DFtMDoQikTmiCqirVv9mWG9qfSnF
         key.public_key().verify(base64.b64decode(self.SIG), base)
 
 
+# -01 Appendix E headers, unwrapped per RFC 8792; module-level so later tasks reuse them.
+E_KEYID = "poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U"
+E_JWK = {"kty": "OKP", "crv": "Ed25519", "x": "JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs"}
+E_AGENT = "https://signature-agent.test"
+E21_HEADERS = [
+    ("Host", "example.com"),
+    ("Signature-Agent", 'sig2="https://signature-agent.test"'),
+    ("Signature-Input",
+     'sig2=("@authority" "signature-agent";key="sig2");created=1735689600;'
+     'keyid="poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U";alg="ed25519";expires=4889289600;'
+     'nonce="n9p433xm+NJ3ph3upfBIGmsuwHw387YV7Q/F+6BSpGCVjYCqQw6rznNA8PVVLySrAWsv0hQtFioQb6E1YsauiA==";'
+     'tag="web-bot-auth"'),
+    ("Signature", "sig2=:CGokAoY/FrPpyuzTe1Fb2kLTAH9Idw6qSFd1+D77r1firsMRCxeuLu5e6O+ek3zQgDMAzjiXtLVfqE00xnABCQ==:"),
+]
+E22_HEADERS = [
+    ("Host", "example.com"),
+    ("Signature-Agent", '"https://signature-agent.test"'),
+    ("Signature-Input",
+     'sig2=("@authority" "signature-agent");created=1735689600;'
+     'keyid="poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U";alg="ed25519";expires=1735693200;'
+     'nonce="e8N7S2MFd/qrd6T2R3tdfAuuANngKI7LFtKYI/vowzk4lAZYadIX6wW25MwG7DCT9RUKAJ0qVkU0mEeLElW1qg==";'
+     'tag="web-bot-auth"'),
+    ("Signature", "sig2=:jdq0SqOwHdyHr9+r5jw3iYZH6aNGKijYp/EstF4RQTQdi5N5YYKrD+mCT1HA1nZDsi6nJKuHxUi/5Syp3rLWBA==:"),
+]
+E11_HEADERS = [
+    ("Host", "example.com"),
+    ("Signature-Agent", 'sig2="https://signature-agent.test"'),
+    ("Signature-Input",
+     'sig2=("@authority" "signature-agent";key="sig2");created=1735689600;'
+     'keyid="oD0HwocPBSfpNy5W3bpJeyFGY_IQ_YpqxSjQ3Yd-CLA";alg="rsa-pss-sha512";expires=4889289600;'
+     'nonce="wcfPQPh7SzkvrIVvhD00vNk9PkxJNY2NVbYl2PVBB4zmUoluSwE7W6bPtF60QA3k8g06FU7PPCD+J58YofY1zg==";'
+     'tag="web-bot-auth"'),
+    ("Signature", "sig2=:iOCC:"),  # value is irrelevant: alg is rejected before any signature check
+]
+E12_HEADERS = [
+    ("Host", "example.com"),
+    ("Signature-Agent", '"https://signature-agent.test"'),
+    ("Signature-Input",
+     'sig2=("@authority" "signature-agent");created=1735689600;'
+     'keyid="oD0HwocPBSfpNy5W3bpJeyFGY_IQ_YpqxSjQ3Yd-CLA";alg="rsa-pss-sha512";expires=1735693200;'
+     'nonce="XSHtZVCThSIAksXsH9WBs6AtxtXC0eQGiIcUGSoJstFs8lAWakjhrfwzLhyjtme5iXMZvmFWqDEs6cT3Jf+BbQ==";'
+     'tag="web-bot-auth"'),
+    ("Signature", "sig2=:I1QW:"),
+]
+E23_BODY = (b'{"keys":[{"kty":"OKP","crv":"Ed25519","kid":"poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U",'
+            b'"x":"JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs","use":"sig"}]}')
+E23_DIGEST = "sha-256=:CADMT2aBdV/rqQr/NIru64ERQkCobVvllA4V0fLFDu0=:"
+
+
+class ConformanceDraft01(unittest.TestCase):
+    """draft-ietf-webbotauth-httpsig-protocol-01 Appendix E vectors."""
+
+    def verifier(self):
+        return Verifier(StaticKeyResolver({E_AGENT: {"keys": [E_JWK]}}, allow_test_keys=True),
+                        policy=Policy(max_age=10**10, max_lifetime=None), clock=lambda: 1735689600)
+
+    def check(self, headers):
+        return self.verifier().verify(Request("GET", "https://example.com/", headers))
+
+    def test_e21_dictionary_agent_verifies(self):
+        r = self.check(E21_HEADERS)
+        self.assertEqual(r.outcome, Outcome.VERIFIED, r.reason)
+        self.assertEqual(r.operator, E_AGENT + "/")
+
+    def test_e22_legacy_string_verifies(self):
+        r = self.check(E22_HEADERS)
+        self.assertEqual(r.outcome, Outcome.VERIFIED, r.reason)
+        self.assertEqual(r.operator, E_AGENT + "/")
+
+    def test_e1_rsa_vectors_are_unsupported(self):
+        for name, headers in (("E.1.1", E11_HEADERS), ("E.1.2", E12_HEADERS)):
+            with self.subTest(name):
+                r = self.check(headers)
+                self.assertEqual(r.outcome, Outcome.INVALID)
+                self.assertEqual(r.reason, "unsupported alg 'rsa-pss-sha512'")
+
+    def test_created_beyond_skew_is_future_not_expired(self):
+        # Pins the created > now + skew branch of _check_times to its own reason.
+        v = Verifier(StaticKeyResolver({E_AGENT: {"keys": [E_JWK]}}, allow_test_keys=True),
+                     policy=Policy(max_age=10**10, max_lifetime=None, clock_skew=5),
+                     clock=lambda: 1735689600 - 6)
+        r = v.verify(Request("GET", "https://example.com/", E21_HEADERS))
+        self.assertEqual((r.outcome, r.reason), (Outcome.INVALID, "created is in the future"))
+
+    def test_e23_content_digest_matches_body(self):
+        self.assertTrue(content_digest_matches(E23_DIGEST, E23_BODY))
+        changed = E23_BODY[:-1] + b"~"
+        self.assertFalse(content_digest_matches(E23_DIGEST, changed))
+
+    def test_e21_rejected_by_default(self):
+        # SC-001, second half: the draft's own key is a published test key.
+        res = DirectoryKeyResolver([E_AGENT], fetch=lambda url: (json.dumps({"keys": [E_JWK]}).encode(), 600))
+        v = Verifier(res, policy=Policy(max_age=10**10, max_lifetime=None), clock=lambda: 1735689600)
+        r = v.verify(Request("GET", "https://example.com/", E21_HEADERS))
+        self.assertEqual((r.outcome, r.reason), (Outcome.INVALID, "known test key rejected"))
+
+
+def _jwk_of(x):
+    return {"kty": "OKP", "crv": "Ed25519", "x": x}
+
+
+# Published private keys: RFC 9421 B.1.4 (the PEM in Conformance) and RFC 8037 A.1 (its "d").
+B14_KEY = load_pem_private_key(Conformance.PEM, None)
+A1_KEY = Ed25519PrivateKey.from_private_bytes(
+    base64.urlsafe_b64decode("nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A="))
+# (source, x, thumbprint) as in spec section 3.6; the thumbprints are recomputed by a test.
+TEST_KEYS = (
+    ("RFC 9421 B.1.4", "JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs",
+     "poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U"),
+    ("RFC 8037 A.1", "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+     "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k"),
+    ("vectors KEY", "SJUTQy84WjB_Cq9wkBIZ0TZmXQr7oG4Qo2SykDItiN0",
+     "CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs"),
+    ("vectors OTHER", "hXOBU2vlJ6UWSGIhxRtqMaa7n_9fhKVTJJtvupLHlNc",
+     "UBQJjBYkCFLaFgwMbZIQWpA2VRag2Y4CVF51WNWQS-s"),
+)
+
+
+def _distinct_jwks(n):
+    out = []
+    for i in range(n):
+        seed = i.to_bytes(32, "big")
+        out.append(public_jwk(Ed25519PrivateKey.from_private_bytes(seed)))
+    return out
+
+
+class KeyLimit(Fixture):
+    def test_directory_with_too_many_keys_is_a_discovery_failure(self):
+        with self.assertRaises(ValueError):
+            parse_directory({"keys": _distinct_jwks(65)})
+        self.assertEqual(len(parse_directory({"keys": _distinct_jwks(64)})), 64)
+
+    def test_limit_boundaries(self):
+        self.assertEqual(parse_directory({"keys": []}), {})
+        self.assertEqual(len(parse_directory({"keys": _distinct_jwks(2)}, max_keys=2)), 2)
+        with self.assertRaises(ValueError):
+            parse_directory({"keys": _distinct_jwks(3)}, max_keys=2)
+
+    def test_entries_that_would_be_skipped_count_toward_the_limit(self):
+        junk = [{"kty": "RSA", "n": "AQAB", "e": "AQAB"}, "not an object", {"kty": "OKP", "crv": "Ed25519"}]
+        with self.assertRaises(ValueError):
+            parse_directory({"keys": _distinct_jwks(62) + junk}, max_keys=64)
+        self.assertEqual(len(parse_directory({"keys": _distinct_jwks(61) + junk}, max_keys=64)), 61)
+        with self.assertRaises(ValueError):  # counted before the test-key filter too
+            parse_directory({"keys": [_jwk_of(TEST_KEYS[0][1])] * 3}, max_keys=2)
+
+    def test_oversized_refresh_keeps_the_warm_cache(self):
+        calls = []
+
+        def fetch(url):
+            calls.append(url)
+            # The oversized body omits our key: accepting it would evict the warm copy.
+            keys = [public_jwk(self.key)] if len(calls) == 1 else _distinct_jwks(65)
+            return json.dumps({"keys": keys}).encode(), 300
+
+        res = DirectoryKeyResolver([AGENT], fetch=fetch)
+        kid = jwk_thumbprint(public_jwk(self.key))
+        self.assertTrue(res.resolve(kid, AGENT_ID, NOW).trusted)
+        self.assertTrue(res.resolve(kid, AGENT_ID, NOW + 301).trusted)
+        self.assertEqual(len(calls), 2)  # the oversized refresh really happened
+
+    def test_resolver_max_keys_is_passed_through(self):
+        body = json.dumps({"keys": _distinct_jwks(3)}).encode()
+        res = DirectoryKeyResolver([AGENT], fetch=lambda url: (body, 300), max_keys=2)
+        kid = jwk_thumbprint(_distinct_jwks(3)[0])
+        self.assertIsNone(res.resolve(kid, AGENT_ID, NOW))
+        with self.assertRaises(ValueError):
+            res.add_untrusted_directory("https://other.example", {"keys": _distinct_jwks(3)}, now=NOW)
+        res = DirectoryKeyResolver([AGENT], fetch=lambda url: (body, 300), max_keys=3)
+        self.assertIsNotNone(res.resolve(kid, AGENT_ID, NOW))
+
+
+class TestKeyDenylist(Fixture):
+    def sign_with(self, key):
+        return sign_request(
+            Request("GET", "https://shop.example/items/42", [("host", "shop.example")]), key,
+            components=("@method", "@authority", "@path", "signature-agent"),
+            created=NOW - 1, expires=NOW + 59, nonce=NONCE, agent=AGENT)
+
+    def directory_verifier(self, key, **kw):
+        body = json.dumps({"keys": [public_jwk(key)]}).encode()
+        return Verifier(DirectoryKeyResolver([AGENT], fetch=lambda url: (body, 600), **kw),
+                        clock=clock)
+
+    def test_test_key_thumbprints_are_the_four_known_keys(self):
+        import generate_vectors
+        self.assertEqual(TEST_KEY_THUMBPRINTS, frozenset(t for _, _, t in TEST_KEYS))
+        for source, x, thumb in TEST_KEYS:
+            with self.subTest(source):
+                self.assertEqual(jwk_thumbprint(_jwk_of(x)), thumb)
+        self.assertEqual(public_jwk(B14_KEY)["x"], TEST_KEYS[0][1])
+        self.assertEqual(public_jwk(A1_KEY)["x"], TEST_KEYS[1][1])
+        self.assertEqual(jwk_thumbprint(public_jwk(generate_vectors.KEY)), TEST_KEYS[2][2])
+        self.assertEqual(jwk_thumbprint(public_jwk(generate_vectors.OTHER)), TEST_KEYS[3][2])
+
+    def test_rfc9421_test_key_dropped_from_directory(self):
+        for name, key in (("B.1.4", B14_KEY), ("8037 A.1", A1_KEY)):
+            with self.subTest(name):
+                r = self.directory_verifier(key).verify(self.sign_with(key))
+                self.assertEqual((r.outcome, r.reason), (Outcome.INVALID, "known test key rejected"))
+                r = self.directory_verifier(key, allow_test_keys=True).verify(self.sign_with(key))
+                self.assertEqual(r.outcome, Outcome.VERIFIED, r.reason)
+
+    def test_parse_directory_skips_test_keys_unless_allowed(self):
+        doc = {"keys": [_jwk_of(x) for _, x, _ in TEST_KEYS] + [public_jwk(self.key)]}
+        self.assertEqual(set(parse_directory(doc)), {jwk_thumbprint(public_jwk(self.key))})
+        self.assertEqual(set(parse_directory(doc, allow_test_keys=True)),
+                         {t for _, _, t in TEST_KEYS} | {jwk_thumbprint(public_jwk(self.key))})
+
+    def test_test_key_rejected_in_static_config(self):
+        for source, x, thumb in TEST_KEYS:
+            with self.subTest(source):
+                with self.assertRaisesRegex(ValueError, thumb):
+                    StaticKeyResolver({AGENT: {"keys": [_jwk_of(x)]}})
+                with self.assertRaisesRegex(ValueError, thumb):
+                    StaticKeyResolver({AGENT: [_jwk_of(x)]})
+                res = StaticKeyResolver({AGENT: {"keys": [_jwk_of(x)]}}, allow_test_keys=True)
+                self.assertIsNotNone(res.resolve(thumb, AGENT_ID, NOW))
+
+    def test_add_untrusted_directory_drops_test_keys(self):
+        jwks = {"keys": [public_jwk(B14_KEY)]}
+        res = DirectoryKeyResolver([])
+        res.add_untrusted_directory(AGENT, jwks, now=NOW)
+        r = Verifier(res, clock=clock).verify(self.sign_with(B14_KEY))
+        # Not allowlisted, so the reason is the resolver's no-key outcome; never an accept.
+        self.assertEqual((r.outcome, r.reason), (Outcome.UNKNOWN_OPERATOR, "no key for this operator"))
+        res = DirectoryKeyResolver([], allow_test_keys=True)
+        res.add_untrusted_directory(AGENT, jwks, now=NOW)
+        r = Verifier(res, clock=clock).verify(self.sign_with(B14_KEY))
+        self.assertEqual(r.outcome, Outcome.SIGNED_UNTRUSTED, r.reason)
+
+    def test_ordinary_unknown_keyid_keeps_its_reason(self):
+        r = self.directory_verifier(self.key).verify(self.sign_with(Ed25519PrivateKey.generate()))
+        self.assertEqual((r.outcome, r.reason), (Outcome.INVALID, "unknown keyid for allowlisted operator"))
+
+
 class Vectors(unittest.TestCase):
     def test_vectors_file_is_current(self):
         import json, os
@@ -856,6 +1571,246 @@ class Vectors(unittest.TestCase):
         with open(path) as f:
             self.assertEqual(json.load(f), generate_vectors.build(),
                              "regenerate: python generate_vectors.py > ../assets/test-vectors.json")
+
+    def test_vectors_say_ports_must_allow_test_keys(self):
+        import generate_vectors
+        self.assertIn("allow_test_keys", generate_vectors.build()["description"])
+
+    # Written by hand, not derived from build() or the verifier (FR-017): name ->
+    # (outcome, operator, claimed_agent). claimed_agent is set once the request reaches the
+    # identity step, so signatures rejected for their parameters or times have none.
+    EXPECTED = {
+        "verified_bound": ("verified", AGENT_ID, AGENT_ID),
+        "verified_post_body": ("verified", AGENT_ID, AGENT_ID),
+        "verified_custom_label": ("verified", AGENT_ID, AGENT_ID),
+        "verified_minimal_coverage_unbound": ("verified", AGENT_ID, AGENT_ID),
+        "verified_without_nonce": ("verified", AGENT_ID, AGENT_ID),
+        "verified_target_uri_only": ("verified", AGENT_ID, AGENT_ID),
+        "verified_legacy_string_agent": ("verified", AGENT_ID, AGENT_ID),
+        "verified_query_ignored_in_identifier": ("verified", AGENT_ID, AGENT_ID),
+        "unsigned": ("unsigned", None, None),
+        "invalid_tampered_body": ("invalid", None, AGENT_ID),
+        "invalid_method_swap": ("invalid", None, AGENT_ID),
+        "invalid_path_swap": ("invalid", None, AGENT_ID),
+        "invalid_wrong_key": ("invalid", None, AGENT_ID),
+        "invalid_bad_alg": ("invalid", None, None),
+        "invalid_created_in_future": ("invalid", None, None),
+        "invalid_lifetime_too_long": ("invalid", None, None),
+        "invalid_short_nonce": ("invalid", None, AGENT_ID),
+        "expired": ("expired", None, None),
+        "expired_created_too_old": ("expired", None, None),
+        "unknown_operator": ("unknown_operator", None, "https://stranger.example/"),
+        "unknown_operator_path_mismatch": ("unknown_operator", None, "https://agent.example/other/path"),
+        "ignored_parameterized_member": ("unknown_operator", None, None),
+        "ignored_member_key_not_label": ("unknown_operator", None, None),
+        "invalid_require_binding": ("invalid", None, AGENT_ID),
+        "invalid_require_nonce": ("invalid", None, AGENT_ID),
+        "replay_first": ("verified", AGENT_ID, AGENT_ID),
+        "replay_second": ("replay", None, AGENT_ID),
+    }
+
+    @staticmethod
+    def load():
+        import json, os
+        path = os.path.join(os.path.dirname(__file__), "..", "assets", "test-vectors.json")
+        with open(path) as f:
+            return json.load(f)
+
+    def test_every_vector_has_an_expected_entry(self):
+        names = [v["name"] for v in self.load()["vectors"]]
+        self.assertEqual(sorted(names), sorted(self.EXPECTED))
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_vectors_match_hand_written_expectations(self):
+        data = self.load()
+        stores = {}
+        for v in data["vectors"]:
+            with self.subTest(vector=v["name"]):
+                store = stores.setdefault(v.get("sequence", v["name"]),
+                                          InMemoryNonceStore(clock=lambda: data["now"]))
+                verifier = Verifier(StaticKeyResolver(data["trusted_keys"], allow_test_keys=True), store,
+                                    Policy(**v["policy_overrides"]), clock=lambda: data["now"])
+                rq = v["request"]
+                r = verifier.verify(Request(rq["method"], rq["url"], [tuple(h) for h in rq["headers"]],
+                                            base64.b64decode(rq["body_base64"])))
+                outcome, operator, claimed = self.EXPECTED[v["name"]]
+                self.assertEqual((r.outcome.value, r.operator, r.claimed_agent), (outcome, operator, claimed), r.reason)
+                exp = v["expected"]
+                self.assertEqual(exp["outcome"], outcome)
+                if outcome in ("verified", "signed_untrusted"):  # given for accepted outcomes only
+                    self.assertEqual((exp["operator"], exp["claimed_agent"]), (operator, claimed))
+                else:
+                    self.assertNotIn("operator", exp)
+                    self.assertNotIn("claimed_agent", exp)
+
+    def test_exactly_one_vector_uses_the_legacy_string_agent(self):
+        legacy = [v["name"] for v in self.load()["vectors"]
+                  if any(k == "signature-agent" and val.startswith('"') for k, val in v["request"]["headers"])]
+        self.assertEqual(legacy, ["verified_legacy_string_agent"])
+
+    def test_ignored_member_vectors_carry_the_documented_shapes(self):
+        by_name = {v["name"]: dict(map(tuple, v["request"]["headers"])) for v in self.load()["vectors"]}
+        self.assertEqual(by_name["ignored_parameterized_member"]["signature-agent"], f'sig1="{AGENT}";x=1')
+        self.assertTrue(by_name["ignored_member_key_not_label"]["signature-input"].startswith("sig2="))
+        self.assertTrue(by_name["ignored_member_key_not_label"]["signature-agent"].startswith("agent2="))
+
+    def test_normalization_section_is_the_identity_contract(self):
+        section = self.load()["normalization"]
+        self.assertEqual([(c["input"], c["identifier"]) for c in section], list(NORMALIZATION_CASES))
+        for c in section:
+            with self.subTest(input=c["input"][:60]):
+                if c["identifier"] is None:
+                    with self.assertRaises(ValueError):
+                        normalize_agent_url(c["input"])
+                else:
+                    self.assertEqual(normalize_agent_url(c["input"]), c["identifier"])
+
+    def test_description_states_the_identity_contract(self):
+        d = self.load()["description"]
+        for needle in ("normalized URL", "allow_test_keys=True", "normalization"):
+            self.assertIn(needle, d)
+
+def hand_signed(key, agent_header, components, label="sig1", url="https://shop.example/items/42",
+                created=NOW - 1):
+    """Sign headers and components exactly as given, through the private _sign (FR-013)."""
+    headers = [("host", "shop.example")]
+    if agent_header is not None:
+        headers.append(("signature-agent", agent_header))
+    covered = parse_dictionary(
+        f'{label}=({components});created={created};expires={created + 60};'
+        f'keyid="{jwk_thumbprint(public_jwk(key))}";alg="ed25519";nonce="{NONCE}";'
+        f'tag="web-bot-auth"')[label]
+    return web_bot_auth._sign(Request("GET", url, headers), key, covered, label)
+
+
+class Signer(Fixture):
+    """FR-013, spec section 3.8."""
+
+    def test_e22_legacy_bytes_from_sign_core(self):
+        headers = E22_HEADERS[:2]
+        covered = parse_dictionary(E22_HEADERS[2][1])["sig2"]
+        out = web_bot_auth._sign(Request("GET", "https://example.com/", headers), B14_KEY,
+                                 covered, "sig2")
+        self.assertEqual(out.header("signature"), E22_HEADERS[3][1])
+        self.assertEqual(out.header("signature-input"), E22_HEADERS[2][1])
+        self.assertEqual(out.header("signature-agent"), '"https://signature-agent.test"')
+
+    def test_agent_is_required(self):
+        with self.assertRaises(TypeError):
+            sign_request(Request("GET", "https://shop.example/", []), self.key)
+
+    def test_rejects_non_https_agent(self):
+        for agent in ("http://agent.example", None, AGENT + "/#f"):
+            with self.subTest(agent=agent):
+                with self.assertRaises(ValueError):
+                    self.signed(agent=agent)
+
+    def test_components_must_cover_signature_agent(self):
+        with self.assertRaises(ValueError):
+            self.signed(components=("@method", "@authority", "@path"))
+
+    def test_components_must_cover_authority_or_target_uri(self):
+        with self.assertRaises(ValueError):
+            self.signed(components=("@method", "@path", "signature-agent"))
+
+    def test_target_uri_alone_is_enough(self):
+        r = self.outcome(self.signed(components=("@target-uri", "signature-agent")))
+        self.assertEqual(r.outcome, Outcome.VERIFIED, r.reason)
+
+    def test_default_sends_dictionary_keyed_by_label(self):
+        req = self.signed()
+        self.assertEqual(req.header("signature-agent"), f'sig1="{AGENT}"')
+        self.assertIn('"signature-agent";key="sig1"', req.header("signature-input"))
+
+    def test_custom_label_keys_member_and_component(self):
+        req = self.signed(label="agent")
+        self.assertEqual(req.header("signature-agent"), f'agent="{AGENT}"')
+        self.assertTrue(req.header("signature-input").startswith("agent=("))
+        self.assertIn('"signature-agent";key="agent"', req.header("signature-input"))
+        r = self.outcome(req)
+        self.assertEqual((r.outcome, r.label, r.operator), (Outcome.VERIFIED, "agent", AGENT_ID), r.reason)
+
+class MemberSelection(Fixture):
+    """FR-003/FR-004, spec section 3.4."""
+    BROWSER = "https://browser.example"
+
+    def verify(self, req, keys):
+        return Verifier(StaticKeyResolver(keys), clock=clock).verify(req)
+
+    def test_each_label_resolves_its_own_member(self):
+        keys = {AGENT: self.jwks, self.BROWSER: self.jwks}
+        members = (f'browser="{self.BROWSER}"', f'agent="{AGENT}"')
+        comps = ('"signature-agent";key="browser"', '"signature-agent";key="agent"')
+        for header in (", ".join(members), ", ".join(reversed(members))):
+            for order in (comps, tuple(reversed(comps))):
+                for label, expected in (("browser", self.BROWSER + "/"), ("agent", AGENT_ID)):
+                    with self.subTest(header=header, order=order, label=label):
+                        req = hand_signed(self.key, header, '"@authority" ' + " ".join(order), label)
+                        r = self.verify(req, keys)
+                        self.assertEqual((r.outcome, r.operator), (Outcome.VERIFIED, expected), r.reason)
+
+    def test_bare_component_selects_label_member(self):
+        req = hand_signed(self.key, f'other="https://other.example", sig1="{AGENT}"',
+                          '"@authority" "signature-agent"')
+        r = self.verify(req, {AGENT: self.jwks})
+        self.assertEqual((r.outcome, r.operator), (Outcome.VERIFIED, AGENT_ID), r.reason)
+
+    def test_bare_component_over_dictionary_without_label_member_is_invalid(self):
+        req = hand_signed(self.key, f'agent="{AGENT}"', '"@authority" "signature-agent"')
+        r = self.verify(req, {AGENT: self.jwks})
+        self.assertEqual((r.outcome, r.reason), (Outcome.INVALID, "cannot determine Signature-Agent value"))
+
+    def test_legacy_string_still_verifies(self):
+        req = hand_signed(self.key, f'"{AGENT}"', '"@authority" "signature-agent"')
+        r = self.verify(req, {AGENT: self.jwks})
+        self.assertEqual((r.outcome, r.operator), (Outcome.VERIFIED, AGENT_ID), r.reason)
+
+    def assert_no_url_path(self, req):
+        r = self.verify(req, {AGENT: self.jwks})
+        self.assertEqual((r.outcome, r.reason, r.operator, r.claimed_agent),
+                         (Outcome.UNKNOWN_OPERATOR, "no key for this operator", None, None))
+        r = self.verify(req, {None: self.jwks})
+        self.assertEqual((r.outcome, r.operator, r.claimed_agent), (Outcome.VERIFIED, None, None), r.reason)
+
+    def test_member_keyed_to_another_label_is_ignored(self):
+        # Spec scenario 7: not INVALID and not attributed to member agent2.
+        self.assert_no_url_path(hand_signed(self.key, f'agent2="{AGENT}"',
+                                            '"@authority" "signature-agent";key="agent2"', "sig2"))
+
+    def test_relabeled_signature_is_ignored_not_invalid(self):
+        req = hand_signed(self.key, f'agent2="{AGENT}"',
+                          '"@authority" "signature-agent";key="agent2"', "agent2")
+        self.assertEqual(self.verify(req, {AGENT: self.jwks}).outcome, Outcome.VERIFIED)
+        relabel = {"signature": lambda v: v.replace("agent2=", "sig2=", 1),
+                   "signature-input": lambda v: v.replace("agent2=", "sig2=", 1)}
+        headers = [(k, relabel[k](v) if k in relabel else v) for k, v in req._headers]
+        self.assert_no_url_path(Request(req.method, req.url, headers))
+
+    def test_member_with_parameters_is_ignored(self):
+        for header, comp in ((f'sig1="{AGENT}";x=1', '"signature-agent";key="sig1"'),
+                             (f'"{AGENT}";x=1', '"signature-agent"')):
+            with self.subTest(header=header):
+                self.assert_no_url_path(hand_signed(self.key, header, '"@authority" ' + comp))
+
+    def test_bare_component_over_token_with_parameters_is_invalid(self):
+        # Spec section 3.4 rule 2: a Token is not the legacy sf-string, so the dictionary is read.
+        req = hand_signed(self.key, "agent;x=1", '"@authority" "signature-agent"')
+        r = self.verify(req, {AGENT: self.jwks})
+        self.assertEqual((r.outcome, r.reason), (Outcome.INVALID, "cannot determine Signature-Agent value"))
+
+    def test_uncovered_member_is_never_credited_or_fetched(self):
+        evil = "https://evil.example"
+        header = f'sig2="{evil}", agent2="{AGENT}"'
+        for label, operator in (("sig2", None), ("agent2", AGENT_ID)):
+            with self.subTest(label=label):
+                fetched = []
+                res = DirectoryKeyResolver([AGENT, evil], fetch=lambda url: (
+                    fetched.append(url) or json.dumps(self.jwks).encode(), 600))
+                req = hand_signed(self.key, header, '"@authority" "signature-agent";key="agent2"', label)
+                r = Verifier(res, clock=clock).verify(req)
+                self.assertEqual((r.outcome, r.operator), (
+                    Outcome.VERIFIED if operator else Outcome.UNKNOWN_OPERATOR, operator), r.reason)
+                self.assertEqual(fetched, [AGENT + WELL_KNOWN_DIRECTORY] if operator else [])
 
 
 if __name__ == "__main__":

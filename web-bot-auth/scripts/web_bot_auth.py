@@ -8,8 +8,8 @@ Implements, for requests:
   * RFC 8037 / RFC 7638 JWK thumbprints for Ed25519 keys
   * Replay protection with a pluggable nonce store
 
-Targets draft-meunier-web-bot-auth-architecture-05 and also accepts the legacy
-sf-string form of Signature-Agent that many deployed agents still send.
+Targets draft-ietf-webbotauth-httpsig-protocol-01; an operator is identified by its
+normalized Signature-Agent URL. Deviation: a bare-origin URL fetches the well-known directory.
 
 Single file, one dependency (``cryptography``). Copy it into a project as-is and
 keep this header; write a thin adapter from your framework's request object to
@@ -23,13 +23,14 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import re
 import socket
 import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Iterable, Mapping, Optional, Protocol, Sequence, Union
+from typing import Callable, Iterable, Mapping, Optional, Protocol, Sequence, Tuple, Union
 from urllib.parse import urlsplit
 
 from cryptography.exceptions import InvalidSignature
@@ -41,10 +42,10 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 __all__ = [
     "Request", "Policy", "Outcome", "Result", "Verifier",
-    "NonceStore", "InMemoryNonceStore", "RedisNonceStore", "NonceStoreError",
+    "NonceStore", "InMemoryNonceStore", "NonceStoreError",
     "KeyResolver", "ResolvedKey", "StaticKeyResolver", "DirectoryKeyResolver",
     "jwk_thumbprint", "public_jwk", "safe_fetch_directory", "sign_request",
-    "Token", "StructuredFieldError",
+    "Token", "StructuredFieldError", "TEST_KEY_THUMBPRINTS", "normalize_agent_url",
 ]
 
 TAG = "web-bot-auth"
@@ -52,9 +53,7 @@ WELL_KNOWN_DIRECTORY = "/.well-known/http-message-signatures-directory"
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
-# --------------------------------------------------------------------------
-# RFC 8941 structured fields (subset)
-# --------------------------------------------------------------------------
+# --- RFC 8941 structured fields (subset) ---
 
 class StructuredFieldError(ValueError):
     pass
@@ -317,9 +316,7 @@ def serialize_dictionary(d: dict) -> str:
     return ", ".join(parts)
 
 
-# --------------------------------------------------------------------------
-# Requests and signature base (RFC 9421)
-# --------------------------------------------------------------------------
+# --- Requests and signature base (RFC 9421) ---
 
 @dataclass
 class Request:
@@ -435,9 +432,7 @@ def signature_base(req: Request, covered: InnerList) -> bytes:
     return "\n".join(lines).encode("ascii", errors="strict")
 
 
-# --------------------------------------------------------------------------
-# Content-Digest (RFC 9530)
-# --------------------------------------------------------------------------
+# --- Content-Digest (RFC 9530) ---
 
 _DIGESTS = {"sha-256": hashlib.sha256, "sha-512": hashlib.sha512}
 
@@ -461,9 +456,7 @@ def content_digest_matches(header_value: str, body: bytes) -> bool:
     return checked
 
 
-# --------------------------------------------------------------------------
-# Keys
-# --------------------------------------------------------------------------
+# --- Keys ---
 
 def _b64url(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
@@ -498,11 +491,32 @@ class _DirKey:
         return (self.nbf is None or now >= self.nbf) and (self.exp is None or now < self.exp)
 
 
-def parse_directory(data: Union[bytes, str, Mapping]) -> dict:
-    """Parse a JWKS key directory into {thumbprint: _DirKey}, skipping non-Ed25519 keys."""
+# Published example keys (-01 section 6.8 says "including": the list is not exhaustive).
+TEST_KEY_THUMBPRINTS = frozenset({
+    "poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U",  # RFC 9421 B.1.4; -01 E.2 and 5.5.1 examples
+    "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k",  # RFC 8037 A.1
+    "CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs",  # this skill's generate_vectors.KEY
+    "UBQJjBYkCFLaFgwMbZIQWpA2VRag2Y4CVF51WNWQS-s",  # this skill's generate_vectors.OTHER
+})
+
+
+def parse_directory(data: Union[bytes, str, Mapping], max_keys: int = 64,
+                    allow_test_keys: bool = False) -> dict:
+    """Parse a JWKS key directory into {thumbprint: _DirKey}, skipping non-Ed25519 keys.
+
+    Raises ValueError (a discovery failure, so a resolver keeps its last good copy) when the
+    document is not a JWKS or has more than ``max_keys`` entries (counted before filtering).
+    Keys in ``TEST_KEY_THUMBPRINTS`` are dropped unless ``allow_test_keys``.
+    """
     doc = json.loads(data) if isinstance(data, (bytes, str)) else data
+    # A 200 that is not a JWKS is not evidence about the keys (-01 section 6.10);
+    # raising lets the caller keep its last good copy instead of caching {}.
+    if not isinstance(doc, Mapping) or not isinstance(doc.get("keys"), list):
+        raise ValueError("not a JWKS: expected an object with a keys array")
     out = {}
-    for jwk in doc.get("keys", []):
+    if len(doc["keys"]) > max_keys:
+        raise ValueError(f"directory has more than {max_keys} keys")
+    for jwk in doc["keys"]:
         if not isinstance(jwk, Mapping) or jwk.get("kty") != "OKP" or jwk.get("crv") != "Ed25519":
             continue
         try:
@@ -511,7 +525,10 @@ def parse_directory(data: Union[bytes, str, Mapping]) -> dict:
         except Exception:
             continue
         nbf, exp = jwk.get("nbf"), jwk.get("exp")
-        out[jwk_thumbprint(jwk)] = _DirKey(
+        kid = jwk_thumbprint(jwk)
+        if kid in TEST_KEY_THUMBPRINTS and not allow_test_keys:
+            continue
+        out[kid] = _DirKey(
             key,
             nbf if isinstance(nbf, int) and not isinstance(nbf, bool) else None,
             exp if isinstance(exp, int) and not isinstance(exp, bool) else None,
@@ -519,34 +536,113 @@ def parse_directory(data: Union[bytes, str, Mapping]) -> dict:
     return out
 
 
-def normalize_origin(url: str) -> str:
-    u = urlsplit(url)
-    if u.scheme.lower() != "https" or not u.hostname:
-        raise ValueError("operator must be an https URL")
-    return "https://" + _authority(u)
+_UNRESERVED = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+_PCHAR = _UNRESERVED | set("!$&'()*+,;=:@%")
+_URL_CHARS = _PCHAR | set("/?[]")  # RFC 3986 characters; rejects "\\", which WHATWG reads as "/"
 
 
-def directory_url(signature_agent: str) -> str:
-    """Resolve a server-configured allowlist entry, never a request header."""
-    u = urlsplit(signature_agent)
-    origin = normalize_origin(signature_agent)
-    if u.fragment or u.username is not None or u.password is not None:
-        raise ValueError("directory URL must not contain a fragment or userinfo")
-    path = u.path if u.path and u.path != "/" else WELL_KNOWN_DIRECTORY
-    return origin + path + ("?" + u.query if u.query else "")
+def _pct(text: str, allowed: frozenset) -> str:
+    """RFC 3986 6.2.2.1-2: decode unreserved octets, uppercase the hex of the rest."""
+    if not set(text) <= allowed or re.search("%(?![0-9A-Fa-f]{2})", text):
+        raise ValueError("character or percent-encoding not allowed here in agent URL")
+    return re.sub("%([0-9A-Fa-f]{2})", lambda m: chr(int(m[1], 16)) if chr(int(m[1], 16)) in _UNRESERVED
+                  else "%" + m[1].upper(), text)
+
+
+def _remove_dot_segments(path: str) -> str:
+    """RFC 3986 5.2.4 for an absolute (or empty) path."""
+    segs, out = path.split("/")[1:], []
+    for i, seg in enumerate(segs):
+        if seg == "..":
+            out = out[:-1]
+        elif seg != ".":
+            out.append(seg)
+        if seg in (".", "..") and i == len(segs) - 1:
+            out.append("")
+    return "/" + "/".join(out)
+
+
+def _host_port(authority: str) -> Tuple[str, str]:
+    if authority.startswith("["):
+        end = authority.find("]") + 1
+        host, port = authority[:end].lower(), authority[end:]
+        try:  # zone identifiers ("%25") and IPvFuture are rejected
+            if not end or "%" in host:
+                raise ValueError
+            ipaddress.IPv6Address(host[1:-1])
+        except ValueError:
+            raise ValueError("bad IP literal in agent URL") from None
+    else:
+        host, colon, port = authority.partition(":")
+        host, port = _pct(host, _UNRESERVED | {"%"}).lower(), colon + port
+        if not host or "%" in host:
+            raise ValueError("agent URL host must be a non-empty name of unreserved characters")
+    digits = port[1:]  # parsed by hand: urlsplit().port differs across Python versions
+    if port[:1] not in ("", ":") or digits and (not set(digits) <= set(_DIGIT) or digits[0] == "0"
+                                                 or len(digits) > 5 or int(digits) > 65535):
+        raise ValueError("bad port in agent URL")
+    return host, "" if digits in ("", "443") else ":" + digits
+
+
+def _split_agent_url(url) -> Tuple[str, Optional[str]]:
+    """Return ``(identifier, normalized query or None)``; spec section 3.1, rules 1-11."""
+    if not isinstance(url, str) or not 0 < len(url) <= 2048 or not url.isascii():
+        raise ValueError("agent URL must be an ASCII string of 1 to 2048 characters")
+    if not set(url) <= _URL_CHARS or url[:8].lower() != "https://":  # also rejects any "#"
+        raise ValueError("agent URL must be an https URL of RFC 3986 characters, without fragment")
+    rest = url[8:]
+    cut = min([i for i in (rest.find("/"), rest.find("?")) if i >= 0] or [len(rest)])
+    host, port = _host_port(rest[:cut])  # userinfo fails there: "@" is not a host character
+    path, q, query = rest[cut:].partition("?")
+    path = _remove_dot_segments(_pct(path, _PCHAR | {"/"}))
+    return f"https://{host}{port}{path}", _pct(query, _PCHAR | {"/", "?"}) if q else None
+
+
+def normalize_agent_url(url: str) -> str:
+    """The -01 identifier of a Signature-Agent URL (query dropped, -01 section 5.5); ValueError if bad."""
+    return _split_agent_url(url)[0]
+
+
+def _directory_entry(entry: str) -> Tuple[str, str]:
+    """``(identifier, fetch URL)`` for a server-configured entry, never a request header.
+
+    Deviation from -01 sections 4.1/4.4: a bare origin (path ``/``) fetches the well-known
+    directory, reserved for the domain operator (-01 section 4.5), and keeps ``https://host/``."""
+    ident, query = _split_agent_url(entry)
+    base = ident[:-1] + WELL_KNOWN_DIRECTORY if ident.count("/") == 3 and ident.endswith("/") else ident
+    return ident, base + ("?" + query if query else "")
+
+
+class _Allowlist(set):
+    """Identifiers. ``add``, ``update`` and ``|=`` reject a value that is not normalized, so
+    a 0.1.1-style origin fails loudly instead of never matching; other set operations do not."""
+
+    def add(self, value):
+        if value != normalize_agent_url(value):
+            raise ValueError(f"not a normalized identifier; use {normalize_agent_url(value)!r}")
+        super().add(value)
+
+    def update(self, *others):
+        for other in others:
+            for value in other:
+                self.add(value)
+
+    def __ior__(self, other):
+        self.update(other)
+        return self
 
 
 @dataclass
 class ResolvedKey:
     key: Ed25519PublicKey
     trusted: bool  # True only for allowlisted operators
+    attributed: bool = True  # False: key tied to no URL; Verifier forces untrusted, operator None
 
 
 class KeyResolver(Protocol):
-    # Optional extra, looked up with getattr and read only after resolve() returned
-    # None: ``directory_unavailable(operator, now) -> bool``. It must be side-effect
-    # free. True turns that failure into UNKNOWN_OPERATOR ("key directory
-    # unavailable") instead of INVALID; it can never yield a key or trust.
+    # ``operator`` is a normalized identifier or None. Optional ``directory_unavailable(operator,
+    # now) -> bool``: side-effect free; the Verifier asks it after resolve() returned None, and
+    # True maps that miss to UNKNOWN_OPERATOR. Never yields a key or trust.
     def resolve(self, keyid: str, operator: Optional[str], now: float) -> Optional[ResolvedKey]: ...
 
     def is_allowlisted(self, operator: Optional[str]) -> bool: ...
@@ -555,16 +651,22 @@ class KeyResolver(Protocol):
 class StaticKeyResolver:
     """Keys configured in code or config, e.g. for tests or out-of-band registered agents.
 
-    ``keys`` maps operator origin (or None for agents that send no
-    Signature-Agent) to a JWKS dict or list of JWKs.
+    ``keys`` maps an agent URL, stored as its normalized identifier (or None for agents that
+    send no Signature-Agent, or only an ignored member), to a JWKS dict or list of JWKs.
     """
 
-    def __init__(self, keys: Mapping, trusted: bool = True):
+    def __init__(self, keys: Mapping, trusted: bool = True, allow_test_keys: bool = False):
         self.trusted = trusted
         self._keys = {}
         for op, jwks in keys.items():
             doc = jwks if isinstance(jwks, Mapping) else {"keys": list(jwks)}
-            self._keys[normalize_origin(op) if op else None] = parse_directory(doc)
+            parsed = parse_directory(doc, allow_test_keys=True)
+            bad = TEST_KEY_THUMBPRINTS.intersection(parsed)
+            if bad and not allow_test_keys:  # fail fast: a published key must not be configured
+                raise ValueError(f"configuration contains a known test key: {sorted(bad)[0]}")
+            ident = normalize_agent_url(op) if op else None
+            if self._keys.setdefault(ident, parsed) is not parsed:  # parity with FR-008
+                raise ValueError(f"two configured agents normalize to {ident}")
 
     def is_allowlisted(self, operator):
         return self.trusted and operator in self._keys
@@ -579,57 +681,73 @@ class StaticKeyResolver:
 class DirectoryKeyResolver:
     """Fetches and caches key directories for allowlisted operators only.
 
-    Never fetches for an operator outside ``allowlist``: a request header must
-    not be able to make the server fetch an arbitrary URL (SSRF). Directories
-    for other operators can be added by a background job via
-    ``add_untrusted_directory``; keys from those resolve as untrusted.
+    ``allowlist`` holds full https URLs; each becomes an identifier (spec section 3.2) that
+    fetches itself, or the well-known directory for a bare origin (a deviation from -01).
+    ``resolver.allowlist`` is the set of identifiers; assigning a new set is unsupported.
+    Never fetches a URL named by a request (SSRF). Keys added via ``add_untrusted_directory``
+    resolve untrusted, and carry no URL unless the caller ``fetched`` them (spec section 3.7).
     """
 
     def __init__(self, allowlist: Iterable[str], fetch: Callable[[str], tuple] = None,
-                 min_ttl: int = 300, max_ttl: int = 86400, refetch_interval: int = 60):
-        self._directory_urls = {}
+                 min_ttl: int = 300, max_ttl: int = 86400, refetch_interval: int = 60,
+                 max_keys: int = 64, allow_test_keys: bool = False):
+        self._fetch_urls = {}
         for entry in allowlist:
-            origin, url = normalize_origin(entry), directory_url(entry)
-            if origin in self._directory_urls and self._directory_urls[origin] != url:
-                raise ValueError(f"conflicting directory URLs for origin {origin}")
-            self._directory_urls[origin] = url
-        self.allowlist = set(self._directory_urls)
+            ident, url = _directory_entry(entry)
+            if self._fetch_urls.setdefault(ident, url) != url:
+                raise ValueError(f"conflicting directory URLs for {ident}")
+        self.allowlist = _Allowlist(self._fetch_urls)
         self.fetch = fetch or safe_fetch_directory
         self.min_ttl, self.max_ttl, self.refetch_interval = min_ttl, max_ttl, refetch_interval
-        self._cache = {}  # origin -> (keys, expires_at, trusted)
+        self.max_keys, self.allow_test_keys = max_keys, allow_test_keys
+        self._cache = {}  # identifier -> (keys, expires_at, trusted)
         self._last_fetch = {}
+        self._pools = {}  # source URL -> (keys, expires_at); the source is only a replacement key
         self._lock = threading.Lock()
 
     def is_allowlisted(self, operator):
         return operator in self.allowlist
 
-    def add_untrusted_directory(self, operator: str, data, ttl: int = 3600, now: float = None):
+    def add_untrusted_directory(self, url: str, data, ttl: int = 3600, now: float = None, *,
+                                fetched: bool = False):
         now = time.time() if now is None else now
-        op = normalize_origin(operator)
+        op = normalize_agent_url(url)
         if op in self.allowlist:
-            raise ValueError("operator is allowlisted; it is fetched, not added")
-        with self._lock:
-            self._cache[op] = (parse_directory(data), now + ttl, False)
+            raise ValueError("url is allowlisted; it is fetched, not added")
+        keys = parse_directory(data, self.max_keys, self.allow_test_keys)
+        with self._lock:  # only fetched=True ties the keys to url (-01 section 5.5.3)
+            if fetched:
+                self._cache[op] = (keys, now + ttl, False)
+            else:  # re-adding a source replaces its keys (-01 section 4.4, newer pair wins)
+                self._pools[op] = (keys, now + ttl)
 
     def _refresh(self, op: str, now: float, force: bool) -> None:
         with self._lock:
             cached = self._cache.get(op)
-            if cached and not force and cached[1] > now:
+            if cached and cached[2] and not force and cached[1] > now:
                 return
             if now - self._last_fetch.get(op, -1e18) < self.refetch_interval:
                 return
             # Reserve the attempt before I/O, including failures and cold starts.
             self._last_fetch[op] = now
-            url = self._directory_urls.get(op)
-            if url is None:
-                url = directory_url(op)
+            url = self._fetch_urls.get(op) or _directory_entry(op)[1]
         body, max_age = self.fetch(url)
         ttl = min(max(max_age if max_age is not None else self.min_ttl, self.min_ttl), self.max_ttl)
-        keys = parse_directory(body)
+        keys = parse_directory(body, self.max_keys, self.allow_test_keys)
         with self._lock:
             self._cache[op] = (keys, now + ttl, True)
 
     def resolve(self, keyid, operator, now):
+        hit = self._resolve_own(keyid, operator, now)
+        # Removal wins: a fresh directory without the key is evidence against it (-01 4.4, 6.10).
+        if hit is not None or self.is_allowlisted(operator) and not self.directory_unavailable(operator, now):
+            return hit
+        with self._lock:  # a second acquisition; a refresh in between is as if it came later
+            pools = list(self._pools.values())
+        k = next((d[keyid] for d, exp in pools if exp > now and keyid in d and d[keyid].usable(now)), None)
+        return None if k is None else ResolvedKey(k.key, False, attributed=False)
+
+    def _resolve_own(self, keyid, operator, now):
         if operator is None:
             return None
         if operator in self.allowlist:
@@ -652,11 +770,9 @@ class DirectoryKeyResolver:
         return ResolvedKey(k.key, trusted) if k is not None and k.usable(now) else None
 
     def directory_unavailable(self, operator, now) -> bool:
-        """True if an allowlisted operator has no fresh cached directory.
+        """True if an allowlisted operator has no fresh cached directory (read-only, no fetch).
 
-        Read-only: no fetch, no mutation. Called only after resolve() found no
-        key, to tell a transient outage from a genuinely unknown key. An expired
-        copy cannot rule out a rotated key we failed to fetch.
+        Asked by the Verifier after a miss and by resolve() (removal wins); see policy-decisions.md s6.
         """
         if operator not in self.allowlist:
             return False
@@ -702,9 +818,7 @@ def safe_fetch_directory(url: str, timeout: float = 2.0, max_bytes: int = 65536)
         return body, max_age
 
 
-# --------------------------------------------------------------------------
-# Nonce stores
-# --------------------------------------------------------------------------
+# --- Nonce stores ---
 
 class NonceStoreError(RuntimeError):
     pass
@@ -739,22 +853,7 @@ class InMemoryNonceStore:
             return True
 
 
-class RedisNonceStore:
-    """Shared store using SET NX PX. Takes any redis-py compatible client."""
-
-    def __init__(self, client, prefix: str = "wba:nonce:"):
-        self.client, self.prefix = client, prefix
-
-    def add_if_absent(self, key, ttl_seconds):
-        try:
-            return bool(self.client.set(self.prefix + key, b"1", nx=True, px=int(ttl_seconds * 1000)))
-        except Exception as e:  # connection errors etc.
-            raise NonceStoreError(str(e)) from e
-
-
-# --------------------------------------------------------------------------
-# Verification
-# --------------------------------------------------------------------------
+# --- Verification ---
 
 class Outcome(str, Enum):
     UNSIGNED = "unsigned"                  # no web-bot-auth signature: score as normal traffic
@@ -773,11 +872,12 @@ HOSTILE = frozenset({Outcome.INVALID, Outcome.EXPIRED, Outcome.REPLAY})
 class Result:
     outcome: Outcome
     reason: str = ""
-    operator: Optional[str] = None
+    operator: Optional[str] = None  # identifier, set only on an accepted outcome
     keyid: Optional[str] = None
     label: Optional[str] = None
     binds_request: bool = False     # method, path, query and body are all covered
     replay_protected: bool = False  # nonce present and recorded
+    claimed_agent: Optional[str] = None  # normalized Signature-Agent; logging only (-01 4.1)
 
     @property
     def hostile(self) -> bool:
@@ -817,7 +917,59 @@ class Verifier:
             return Result(Outcome.INVALID, f"malformed: {e}")
 
     def _verify(self, req: Request) -> Result:
-        p = self.policy
+        selected = self._select(req)
+        if isinstance(selected, Result):
+            return selected
+        label, covered, signature = selected
+
+        params = covered.params
+        keyid, created, expires = params.get("keyid"), params.get("created"), params.get("expires")
+        nonce = params.get("nonce")
+        res = Result(Outcome.INVALID, label=label, keyid=keyid if isinstance(keyid, str) else None)
+        # Cheap checks before any crypto or key fetching.
+        now = self.clock()
+        stop = (self._check_params(covered, res) or self._check_times(created, expires, now, res)
+                or self._identity(req, covered, label, res))
+        if stop is not None:
+            return stop
+
+        names = {c.value for c in covered.items}
+        if "content-digest" in names:
+            cd = req.header("content-digest")
+            if cd is None or not content_digest_matches(cd, req.body):
+                res.reason = "content-digest does not match body"; return res
+
+        resolved = self._resolve_key(res, keyid, res.claimed_agent, now)
+        if resolved is None:
+            return res
+
+        base = signature_base(req, covered)
+        try:
+            resolved.key.verify(signature, base)
+        except InvalidSignature:
+            res.reason = "signature does not verify"; return res
+
+        # Coverage: is this signature bound to this specific request?
+        res.binds_request = (
+            "@method" in names
+            and bool(names & _PATH_COVERING)
+            and (not urlsplit(req.url).query or bool(names & _QUERY_COVERING))
+            and (not req.body or "content-digest" in names)
+        )
+        if self.policy.require_binding and not res.binds_request:
+            res.reason = "signature does not cover method, path, query and body"; return res
+
+        stop = self._check_nonce(req, keyid, nonce, created, expires, now, res)
+        if stop is not None:
+            return stop
+
+        res.outcome = Outcome.VERIFIED if resolved.trusted and resolved.attributed else Outcome.SIGNED_UNTRUSTED
+        res.reason, res.operator = "ok", res.claimed_agent if resolved.attributed else None  # spec 3.3
+        return res
+
+    @staticmethod
+    def _select(req: Request):
+        """Return ``(label, covered, signature)``, or a Result when nothing is left to verify."""
         sig_header, input_header = req.header("signature"), req.header("signature-input")
         if sig_header is None and input_header is None:
             return Result(Outcome.UNSIGNED, "no signature")
@@ -829,16 +981,16 @@ class Verifier:
                       if isinstance(v, InnerList) and v.params.get("tag") == TAG), None)
         if label is None:
             return Result(Outcome.UNSIGNED, "no web-bot-auth signature")
-        covered = inputs[label]
         sig_member = sigs.get(label)
         if not isinstance(sig_member, Item) or not isinstance(sig_member.value, bytes):
             return Result(Outcome.INVALID, "no signature value for label", label=label)
-        signature = sig_member.value
+        return label, inputs[label], sig_member.value
 
+    @staticmethod
+    def _check_params(covered: InnerList, res: Result) -> Optional[Result]:
         params = covered.params
         keyid, created, expires = params.get("keyid"), params.get("created"), params.get("expires")
         nonce, alg = params.get("nonce"), params.get("alg")
-        res = Result(Outcome.INVALID, label=label, keyid=keyid if isinstance(keyid, str) else None)
         if not isinstance(keyid, str) or isinstance(keyid, Token):
             res.reason = "keyid missing"; return res
         if not isinstance(created, int) or isinstance(created, bool) \
@@ -848,9 +1000,10 @@ class Verifier:
             res.reason = f"unsupported alg {alg!r}"; return res
         if nonce is not None and (not isinstance(nonce, str) or isinstance(nonce, Token)):
             res.reason = "nonce must be a string"; return res
+        return None
 
-        # Cheap checks before any crypto or key fetching.
-        now = self.clock()
+    def _check_times(self, created: int, expires: int, now: float, res: Result) -> Optional[Result]:
+        p = self.policy
         if created > now + p.clock_skew:
             res.reason = "created is in the future"; return res
         if expires <= created:
@@ -859,56 +1012,31 @@ class Verifier:
             res.reason = "validity period too long"; return res
         if now > expires + p.clock_skew or now - created > p.max_age + p.clock_skew:
             res.outcome, res.reason = Outcome.EXPIRED, "signature expired"; return res
+        return None
 
+    def _identity(self, req: Request, covered: InnerList, label: str, res: Result) -> Optional[Result]:
         names = {c.value for c in covered.items}
-        if "@authority" not in names:
-            res.reason = "@authority must be covered"; return res
+        if not names & {"@authority", "@target-uri"}:
+            res.reason = "@authority or @target-uri must be covered"; return res
 
-        # Operator identity from Signature-Agent (must be signed if present).
-        operator = None
+        # Claimed identity from Signature-Agent (must be signed if present).
+        agent = None
         agent_header = req.header("signature-agent")
         if agent_header is not None:
-            agent_comps = [c for c in covered.items if c.value == "signature-agent"]
-            if not agent_comps:
-                res.reason = "Signature-Agent present but not covered"; return res
-            agent_url = self._agent_url(agent_header, agent_comps[0], label)
-            if agent_url is None:
-                res.reason = "cannot determine Signature-Agent value"; return res
-            try:
-                operator = normalize_origin(agent_url)
+            agent_url, error = self._agent_member(agent_header, covered, label)
+            if error is not None:
+                res.reason = error; return res
+            try:  # None: the member is ignored and the key is looked up as for no header
+                agent = None if agent_url is None else normalize_agent_url(agent_url)
             except ValueError as e:
                 res.reason = str(e); return res
-        res.operator = operator
+        res.claimed_agent = agent
+        return None
 
-        # Body integrity, if claimed.
-        if "content-digest" in names:
-            cd = req.header("content-digest")
-            if cd is None or not content_digest_matches(cd, req.body):
-                res.reason = "content-digest does not match body"; return res
-
-        resolved = self._resolve_key(res, keyid, operator, now)
-        if resolved is None:
-            return res
-
-        base = signature_base(req, covered)
-        try:
-            resolved.key.verify(signature, base)
-        except InvalidSignature:
-            res.reason = "signature does not verify"; return res
-
-        # Coverage: is this signature bound to this specific request?
-        u = urlsplit(req.url)
-        res.binds_request = (
-            "@method" in names
-            and bool(names & _PATH_COVERING)
-            and (not u.query or bool(names & _QUERY_COVERING))
-            and (not req.body or "content-digest" in names)
-        )
-        if p.require_binding and not res.binds_request:
-            res.reason = "signature does not cover method, path, query and body"; return res
-
-        # Replay: record the nonce only after the signature verifies, so
-        # unsigned junk cannot fill the store.
+    def _check_nonce(self, req: Request, keyid: str, nonce: Optional[str], created: int,
+                     expires: int, now: float, res: Result) -> Optional[Result]:
+        # Run only after the signature verifies, so unsigned junk cannot fill the store.
+        p = self.policy
         if nonce is None:
             if p.require_nonce:
                 res.reason = "nonce required"; return res
@@ -925,10 +1053,7 @@ class Verifier:
             if fresh is False:
                 res.outcome, res.reason = Outcome.REPLAY, "nonce already used"; return res
             res.replay_protected = fresh is True
-
-        res.outcome = Outcome.VERIFIED if resolved.trusted else Outcome.SIGNED_UNTRUSTED
-        res.reason = "ok"
-        return res
+        return None
 
     def _resolve_key(self, res: Result, keyid: str, operator, now: float) -> Optional[ResolvedKey]:
         """Return the key, or None after setting ``res.outcome``/``res.reason``."""
@@ -943,62 +1068,61 @@ class Verifier:
             # A transient fetch failure must not read as a hostile signature.
             res.outcome, res.reason = Outcome.UNKNOWN_OPERATOR, "key directory unavailable"
         elif keys.is_allowlisted(operator):
-            res.reason = "unknown keyid for allowlisted operator"
+            known = keyid in TEST_KEY_THUMBPRINTS  # outcome unchanged; only the reason is clearer
+            res.reason = "known test key rejected" if known else "unknown keyid for allowlisted operator"
         else:
             res.outcome, res.reason = Outcome.UNKNOWN_OPERATOR, "no key for this operator"
         return None
 
     @staticmethod
-    def _agent_url(header: str, comp: Item, label: str) -> Optional[str]:
-        # Legacy form: a single sf-string.
-        try:
-            it = parse_item(header)
-            if isinstance(it.value, str) and not isinstance(it.value, Token):
-                return it.value
-        except StructuredFieldError:
-            pass
-        # Draft-05 form: a dictionary of label -> sf-string.
-        try:
-            d = parse_dictionary(header)
-        except StructuredFieldError:
-            return None
-        key = comp.params.get("key")
-        member = d.get(key) if isinstance(key, str) else (
-            d.get(label) or (next(iter(d.values())) if len(d) == 1 else None))
+    def _agent_member(header: str, covered: InnerList, label: str) -> Tuple[Optional[str], Optional[str]]:
+        """Return ``(url, error)`` for the member of ``label`` (spec section 3.4).
+
+        ``(None, None)`` means ignored: covered only under another label's key
+        (an intermediary may relabel the signature, not the covered key), or
+        the member has parameters (-01 section 5.2.1)."""
+        keys = [c.params.get("key") for c in covered.items if c.value == "signature-agent"]
+        if not keys:
+            return None, "Signature-Agent present but not covered"
+        if label not in keys and None not in keys:
+            return None, None
+        member = None
+        if label not in keys:  # bare component: a legacy sf-string stands for {label: value}
+            try:
+                member = parse_item(header)
+            except StructuredFieldError:
+                pass
+        if not (isinstance(member, Item) and type(member.value) is str):  # a Token is no sf-string
+            try:
+                member = parse_dictionary(header).get(label)
+            except StructuredFieldError:
+                member = None
+        if isinstance(member, Item) and member.params:
+            return None, None
         if isinstance(member, Item) and isinstance(member.value, str) and not isinstance(member.value, Token):
-            return member.value
-        return None
+            return member.value, None
+        return None, "cannot determine Signature-Agent value"
 
 
-# --------------------------------------------------------------------------
-# Signing (for tests, examples and agent operators)
-# --------------------------------------------------------------------------
+# --- Signing (for tests, examples and agent operators) ---
 
-def sign_request(req: Request, private_key: Ed25519PrivateKey, *,
+def sign_request(req: Request, private_key: Ed25519PrivateKey, *, agent: str,
                  components: Sequence[str] = ("@method", "@authority", "@path", "signature-agent"),
                  created: Optional[int] = None, expires: Optional[int] = None,
-                 nonce: Optional[str] = None, agent: Optional[str] = None,
-                 agent_as_dictionary: bool = False, label: str = "sig1",
+                 nonce: Optional[str] = None, label: str = "sig1",
                  keyid: Optional[str] = None, include_alg: bool = True) -> Request:
-    """Return a copy of ``req`` with Signature-Agent, Content-Digest (if covered),
-    Signature-Input and Signature headers added."""
+    """Return a copy of ``req`` with ``Signature-Agent: <label>="<agent>"``, Content-Digest
+    (if covered), Signature-Input and Signature headers added (-01 section 5.2)."""
+    normalize_agent_url(agent)  # raises ValueError for a bad agent, None included
+    if "signature-agent" not in components or not {"@authority", "@target-uri"} & set(components):
+        raise ValueError('components must include "signature-agent" and "@authority" or "@target-uri"')
     created = int(time.time()) if created is None else created
     expires = created + 60 if expires is None else expires
     keyid = keyid or jwk_thumbprint(public_jwk(private_key))
     headers = [(k, v) for k, v in req._headers
                if k not in ("signature", "signature-input", "signature-agent")]
-    comps = []
-    for c in components:
-        if c == "signature-agent" and agent is None:
-            continue
-        if c == "signature-agent" and agent_as_dictionary:
-            comps.append(Item(c, {"key": label}))
-        else:
-            comps.append(Item(c))
-    if agent is not None:
-        headers.append(("signature-agent",
-                        f'{label}={serialize_bare_item(agent)}' if agent_as_dictionary
-                        else serialize_bare_item(agent)))
+    headers.append(("signature-agent", f"{label}={serialize_bare_item(agent)}"))
+    comps = [Item(c, {"key": label} if c == "signature-agent" else {}) for c in components]
     if "content-digest" in components and not any(k == "content-digest" for k, _ in headers):
         headers.append(("content-digest", f"sha-256=:{base64.b64encode(hashlib.sha256(req.body).digest()).decode()}:"))
     params: Params = {"created": created, "expires": expires, "keyid": keyid}
@@ -1007,11 +1131,13 @@ def sign_request(req: Request, private_key: Ed25519PrivateKey, *,
     if nonce is not None:
         params["nonce"] = nonce
     params["tag"] = TAG
-    covered = InnerList(comps, params)
-    out = Request(req.method, req.url, headers, req.body)
-    sig = private_key.sign(signature_base(out, covered))
-    out = Request(req.method, req.url, headers + [
+    return _sign(Request(req.method, req.url, headers, req.body), private_key,
+                 InnerList(comps, params), label)
+
+
+def _sign(req: Request, private_key: Ed25519PrivateKey, covered: InnerList, label: str) -> Request:
+    """Sign ``req`` as given, with no header or coverage checks (tests and vectors)."""
+    sig = private_key.sign(signature_base(req, covered))
+    return Request(req.method, req.url, req._headers + [
         ("signature-input", f"{label}={serialize_inner_list(covered)}"),
-        ("signature", f"{label}=:{base64.b64encode(sig).decode()}:"),
-    ], req.body)
-    return out
+        ("signature", f"{label}=:{base64.b64encode(sig).decode()}:")], req.body)
