@@ -11,9 +11,14 @@ The verifier rebuilds exactly the bytes the agent signed. If the adapter changes
 | `headers` | Every occurrence of every field, in order | A dict that keeps only the last occurrence |
 | `body` | Raw bytes as received | Parsed JSON re-serialized; body already consumed by the framework; decompressed bytes when the agent digested the compressed ones |
 
+## Plain http and `@target-uri`
+
+- **Refuse signature headers over an unsecured channel.** -01 section 6.1 says an origin SHOULD refuse `Signature` headers communicated over plain http, because a signature sent in the clear can be captured and reused. If the request reached you over http (after considering a trusted proxy's forwarded scheme), do not verify it; answer or redirect as your policy says, and never treat it as `verified`.
+- **Build `req.url` exactly as received when the agent covers `@target-uri`.** The signature base uses the string you pass, byte for byte. `https://h:443/` is not the same string as `https://h/`, a lowercased or percent-decoded path differs, and a reordered query differs (-01 section 5.2 notes that intermediary reordering invalidates an `@target-uri` signature). Do not normalize it. Behind a TLS-terminating proxy the internal URL is `http://app:8080/...`, so build the external one from the trusted forwarded scheme and host, with the port only if the client sent it. `@authority` is normalized for you (default ports dropped), so this matters only for `@target-uri`.
+
 ## Behind a proxy or CDN
 
-The client signed the public authority (e.g. `shop.example`), but your app may see `app:8080`. Rebuild the URL from `X-Forwarded-Proto` / `X-Forwarded-Host` (or `Forwarded`) **only when the request came from a proxy you trust**, which is usually checked by the peer IP. Otherwise an attacker sets those headers. If the deployment has a fixed public origin, hardcoding it is simpler and safer.
+The client signed the public authority (e.g. `shop.example`), but your app may see `app:8080`. Rebuild the URL (and apply the plain-http rule above to the forwarded scheme) from `X-Forwarded-Proto` / `X-Forwarded-Host` (or `Forwarded`) **only when the request came from a proxy you trust**, which is usually checked by the peer IP. Otherwise an attacker sets those headers. If the deployment has a fixed public origin, hardcoding it is simpler and safer.
 
 If a CDN in front of you already verifies Web Bot Auth, decide with the user whether to verify again at the origin or trust the CDN's result header. Trusting the header is only safe if the origin accepts traffic from the CDN alone.
 
@@ -39,4 +44,6 @@ Through the framework's own test client, send:
 2. the same request again, which must give `replay`;
 3. a signed POST with one body byte changed, which must give `invalid`;
 4. a valid request with a query string, which must still give `verified` (this catches query normalization bugs);
-5. when behind a proxy, a request with a forged `X-Forwarded-Host` from an untrusted peer, which must not verify.
+5. when behind a proxy, a request with a forged `X-Forwarded-Host` from an untrusted peer, which must not verify;
+6. a request over plain http carrying signature headers, which must be refused, not verified;
+7. if agents may cover `@target-uri`, a request signed with `components=("@method", "@target-uri", "signature-agent")` and a URL with an explicit `:443`, which must verify when the adapter passes that exact string and fail if the adapter strips the port.

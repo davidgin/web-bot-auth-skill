@@ -7,6 +7,8 @@ A nonce store needs one operation: atomically record a key with a TTL, and repor
 
 Keys are `"{keyid}:{nonce}"`, and the TTL is `min(expires, created + max_age) - now + clock_skew`. Nonces are recorded only after the signature verifies.
 
+Basis: replay protection and the `nonce` parameter are defined in RFC 9421 section 7.2.2, and -01 section 5.2.3 adds no nonce requirements. -01 Appendix C.6 gives the operational guidance this page follows: rejecting duplicate nonces needs an atomic check-and-record across the enforcement scope, retention and admission of nonce state must be bounded, and if the state is unavailable the verifier must not treat signature validation as evidence that replay was detected or prevented (which is why `replay_protected` is `False` then).
+
 ## Suitable
 
 | Store | How |
@@ -20,7 +22,7 @@ Keys are `"{keyid}:{nonce}"`, and the TTL is `min(expires, created + max_age) - 
 
 ### Redis snippet
 
-Copy this into your application. It takes any redis-py compatible client and raises `NonceStoreError` on connection errors, which the verifier turns into `Policy.fail_closed_methods` handling.
+`RedisNonceStore` is not part of `web_bot_auth.py` and cannot be imported from it; copy this snippet into your application. It takes any redis-py compatible client and raises `NonceStoreError` on connection errors, which the verifier turns into `Policy.fail_closed_methods` handling.
 
 ```python
 from web_bot_auth import NonceStoreError

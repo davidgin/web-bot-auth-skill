@@ -636,13 +636,13 @@ class _Allowlist(set):
 class ResolvedKey:
     key: Ed25519PublicKey
     trusted: bool  # True only for allowlisted operators
-    attributed: bool = True  # False: the key carries no URL; forces trusted False and operator None
+    attributed: bool = True  # False: key tied to no URL; Verifier forces untrusted, operator None
 
 
 class KeyResolver(Protocol):
     # ``operator`` is a normalized identifier or None. Optional ``directory_unavailable(operator,
-    # now) -> bool``: side-effect free, read only after resolve() returned None; True maps that
-    # miss to UNKNOWN_OPERATOR. Never yields a key or trust.
+    # now) -> bool``: side-effect free; the Verifier asks it after resolve() returned None, and
+    # True maps that miss to UNKNOWN_OPERATOR. Never yields a key or trust.
     def resolve(self, keyid: str, operator: Optional[str], now: float) -> Optional[ResolvedKey]: ...
 
     def is_allowlisted(self, operator: Optional[str]) -> bool: ...
@@ -772,7 +772,7 @@ class DirectoryKeyResolver:
     def directory_unavailable(self, operator, now) -> bool:
         """True if an allowlisted operator has no fresh cached directory (read-only, no fetch).
 
-        Called only after resolve() found no key; see references/policy-decisions.md section 6.
+        Asked by the Verifier after a miss and by resolve() (removal wins); see policy-decisions.md s6.
         """
         if operator not in self.allowlist:
             return False
