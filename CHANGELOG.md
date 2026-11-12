@@ -6,10 +6,10 @@ Retargets the verifier from draft-meunier-web-bot-auth-architecture-05 to draft-
 
 ### Security
 
-- Identity was the origin, so a request whose `Signature-Agent` named `https://agent.example/~mallory/keys.json` was credited to `https://agent.example` while its keys came from a different URL. Keys and signatures were attributed to the host operator for any path on that host, and two tenants on one host could not be told apart (-01 §5.5: "TLS authenticates the host but not the path"). The identifier is now the normalized `Signature-Agent` URL (FR-005..FR-008).
+- In 0.1.1 the identity was the origin of the claimed `Signature-Agent` URL, and the keys came from the directory configured for that origin (its well-known path, or the allowlist entry). A request claiming `https://agent.example/~mallory/keys.json` was therefore verified against the keys of `https://agent.example` and credited to it, although the claimed URL was never consulted. This is mis-attribution, not forgery: the signature still had to verify under a key in the configured directory, so an attacker without such a key could not impersonate the operator. The harm was that the claimed identity was not bound to where the keys came from, so tenants sharing a host were indistinguishable and any holder of a key on that host could pass under any path claim. This is the gap -01 §5.5 describes ("TLS authenticates the host but not the path"). The identifier is now the normalized `Signature-Agent` URL (FR-005..FR-008).
 - Keys from third-party lists (`add_untrusted_directory`) are no longer attributed to a URL unless the caller says they were fetched from it (-01 §5.5.3), and they never override a removal by an allowlisted identifier's own fresh directory (FR-021, "removal wins").
 - A 200 response that is not a JWKS no longer evicts the cached keys; the last good copy is kept (-01 §6.10).
-- Known test keys (the four published RFC 9421 / draft test keys) are rejected by default (-01 §6.8).
+- Four known test keys are rejected by default (-01 §6.8): two published ones (RFC 9421 B.1.4, RFC 8037 A.1) and two from this skill's own test vectors. Anyone who uses the vectors' keys (for example their own test deployment) must pass `allow_test_keys=True`.
 - A `Signature-Agent` member covered under a different label's key, or one carrying parameters, is ignored: the request is `unknown_operator` with no URL, never attributed (-01 §6.6.1, RFC 9421 §7.2.5).
 
 ### Breaking
