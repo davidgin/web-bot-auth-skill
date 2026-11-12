@@ -33,14 +33,14 @@ Retargets the verifier from draft-meunier-web-bot-auth-architecture-05 to draft-
 - `normalize_agent_url`.
 - -01 Appendix E conformance tests (E.2.1, E.2.2, E.2.3; E.1 RSA-PSS is reported as unsupported) and the `normalization` section of the language-neutral test vectors.
 
+### Docs
+
+- README rewritten to explain the problem and the -01 quick-start.
+
 ### Development
 
 - Development environment now uses uv (`pyproject.toml`, `uv.lock`). CI runs through uv. The shipped skill is unchanged.
 - The size limit for `web_bot_auth.py` is 1,150 lines.
-
-### Pending
-
-- The README update (quick-start rewritten for -01) lives on the unmerged branch `docs/readme`; its quick-start uses `agent_as_dictionary=True`, which 0.2.0 removed, so that branch must be fixed before it merges. Only the minimal README correction is in this release.
 
 ### Deferred to 0.3.0
 
