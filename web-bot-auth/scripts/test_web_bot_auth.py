@@ -1238,6 +1238,20 @@ class DirectoryTrust(Fixture):
         self.assertEqual(self.verify(res, self.signed()).outcome, Outcome.SIGNED_UNTRUSTED)
         self.assertFetchedSubset(self.fetched, res)
 
+    def test_allowlisting_after_a_fetched_untrusted_entry_uses_the_real_directory(self):
+        # The cached untrusted entry must not hide the newly allowlisted directory until its ttl.
+        for served, held, outcome in ((self.other, self.jwks, Outcome.INVALID),
+                                      (self.jwks, self.jwks, Outcome.VERIFIED)):
+            with self.subTest(outcome=outcome):
+                self.fetched.clear()
+                res = self.directory(served)
+                res.allowlist.discard(AGENT_ID)
+                res.add_untrusted_directory(AGENT, held, ttl=3600, now=NOW, fetched=True)
+                res.allowlist.add(AGENT_ID)
+                r = self.verify(res, self.signed())
+                self.assertEqual(r.outcome, outcome, r.reason)
+                self.assertEqual(len(self.fetched), 1)
+
     def test_allowlisted_url_cannot_be_added(self):
         res = self.directory(self.jwks)
         for fetched in (False, True):

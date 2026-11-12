@@ -724,7 +724,7 @@ class DirectoryKeyResolver:
     def _refresh(self, op: str, now: float, force: bool) -> None:
         with self._lock:
             cached = self._cache.get(op)
-            if cached and not force and cached[1] > now:
+            if cached and cached[2] and not force and cached[1] > now:
                 return
             if now - self._last_fetch.get(op, -1e18) < self.refetch_interval:
                 return

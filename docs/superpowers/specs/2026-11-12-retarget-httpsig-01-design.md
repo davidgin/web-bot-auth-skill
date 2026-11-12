@@ -1,7 +1,7 @@
 # Retarget the web-bot-auth skill to draft-ietf-webbotauth-httpsig-protocol-01
 
 - Date: 2026-11-12 (revision 1, after the analyze pass)
-- Status: draft, waiting for user approval
+- Status: approved 2026-11-12 and implemented on this branch
 - Branch: `feat/retarget-httpsig-01` (from `main` @ d35a52b)
 - Plan: `docs/superpowers/plans/2026-11-12-retarget-httpsig-01.md`
 - Target release: 0.2.0 on this branch (breaking; contains security fixes).
@@ -288,7 +288,7 @@ Deferred to 0.3.0 (§9). `Verifier.verify(req)` keeps its contract: the first
 
 The RFC 8037 row: the `x` value was derived from the RFC's A.1 private key `d`
 with the repo code, and its thumbprint equals the value RFC 8037 A.3 publishes
-(both values recalled, not read from the RFC text this session). -01 §6.8 says
+(both values confirmed against rfc8037.txt by the T13 review). -01 §6.8 says
 "including", so the list is not exhaustive; the docs say so.
 
 `StaticKeyResolver(keys, trusted=True, allow_test_keys=False)` raises
