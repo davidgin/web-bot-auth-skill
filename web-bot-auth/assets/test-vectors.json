@@ -1,5 +1,5 @@
 {
-  "description": "Web Bot Auth verifier vectors. TEST KEYS ONLY: their thumbprints are on the verifier denylist, so ports must enable their equivalent of allow_test_keys=True to run these vectors. Flags are given only for accepted outcomes.",
+  "description": "Web Bot Auth verifier vectors. TEST KEYS ONLY: their thumbprints are on the verifier denylist, so ports must enable their equivalent of allow_test_keys=True to run these vectors. Operators are normalized URLs (the -01 Signature-Agent identifier). Operator, claimed_agent and the flags are given only for accepted outcomes. The normalization section (input to identifier, null for reject) is the cross-language identity contract.",
   "now": 1800000000,
   "trusted_keys": {
     "https://agent.example/": {
@@ -48,7 +48,9 @@
       "expected": {
         "outcome": "verified",
         "binds_request": true,
-        "replay_protected": true
+        "replay_protected": true,
+        "operator": "https://agent.example/",
+        "claimed_agent": "https://agent.example/"
       }
     },
     {
@@ -84,7 +86,9 @@
       "expected": {
         "outcome": "verified",
         "binds_request": true,
-        "replay_protected": true
+        "replay_protected": true,
+        "operator": "https://agent.example/",
+        "claimed_agent": "https://agent.example/"
       }
     },
     {
@@ -116,7 +120,111 @@
       "expected": {
         "outcome": "verified",
         "binds_request": true,
-        "replay_protected": true
+        "replay_protected": true,
+        "operator": "https://agent.example/",
+        "claimed_agent": "https://agent.example/"
+      }
+    },
+    {
+      "name": "verified_target_uri_only",
+      "request": {
+        "method": "GET",
+        "url": "https://shop.example/items/42",
+        "headers": [
+          [
+            "host",
+            "shop.example"
+          ],
+          [
+            "signature-agent",
+            "sig1=\"https://agent.example\""
+          ],
+          [
+            "signature-input",
+            "sig1=(\"@target-uri\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+          ],
+          [
+            "signature",
+            "sig1=:gYUKUxCpJiVpyrZ8OaQID7NGVOXHZBhtM6davJs+FPRnDC/x3djLmS46cqDSVMw4kvA6TrnlBqHeE/Q97I7FAw==:"
+          ]
+        ],
+        "body_base64": ""
+      },
+      "policy_overrides": {},
+      "expected": {
+        "outcome": "verified",
+        "binds_request": false,
+        "replay_protected": true,
+        "operator": "https://agent.example/",
+        "claimed_agent": "https://agent.example/"
+      }
+    },
+    {
+      "name": "verified_legacy_string_agent",
+      "request": {
+        "method": "GET",
+        "url": "https://shop.example/items/42",
+        "headers": [
+          [
+            "host",
+            "shop.example"
+          ],
+          [
+            "signature-agent",
+            "\"https://agent.example\""
+          ],
+          [
+            "signature-input",
+            "sig1=(\"@authority\" \"signature-agent\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+          ],
+          [
+            "signature",
+            "sig1=:6oIn6oCE9qRzsJKNpSvHdv+LLXRfiTQca8mmMT1ZBjSR2+UcZV4JjL29uxQtUlTlHsBV0vZZbAi8iPWNaqlNDg==:"
+          ]
+        ],
+        "body_base64": ""
+      },
+      "policy_overrides": {},
+      "expected": {
+        "outcome": "verified",
+        "binds_request": false,
+        "replay_protected": true,
+        "operator": "https://agent.example/",
+        "claimed_agent": "https://agent.example/"
+      }
+    },
+    {
+      "name": "verified_query_ignored_in_identifier",
+      "request": {
+        "method": "GET",
+        "url": "https://shop.example/items/42",
+        "headers": [
+          [
+            "host",
+            "shop.example"
+          ],
+          [
+            "signature-agent",
+            "sig1=\"https://agent.example/?v=3\""
+          ],
+          [
+            "signature-input",
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+          ],
+          [
+            "signature",
+            "sig1=:sWKbsg1xqUGh5G4DOFJqqxWSt77mjuPm8sVaeaR7MgDOzvEF9JzT3JdlA+FVjFO4UxKMZox3If0BAqcXHgHACQ==:"
+          ]
+        ],
+        "body_base64": ""
+      },
+      "policy_overrides": {},
+      "expected": {
+        "outcome": "verified",
+        "binds_request": true,
+        "replay_protected": true,
+        "operator": "https://agent.example/",
+        "claimed_agent": "https://agent.example/"
       }
     },
     {
@@ -148,7 +256,9 @@
       "expected": {
         "outcome": "verified",
         "binds_request": false,
-        "replay_protected": true
+        "replay_protected": true,
+        "operator": "https://agent.example/",
+        "claimed_agent": "https://agent.example/"
       }
     },
     {
@@ -180,7 +290,9 @@
       "expected": {
         "outcome": "verified",
         "binds_request": true,
-        "replay_protected": false
+        "replay_protected": false,
+        "operator": "https://agent.example/",
+        "claimed_agent": "https://agent.example/"
       }
     },
     {
@@ -536,6 +648,96 @@
       }
     },
     {
+      "name": "unknown_operator_path_mismatch",
+      "request": {
+        "method": "GET",
+        "url": "https://shop.example/items/42",
+        "headers": [
+          [
+            "host",
+            "shop.example"
+          ],
+          [
+            "signature-agent",
+            "sig1=\"https://agent.example/other/path\""
+          ],
+          [
+            "signature-input",
+            "sig1=(\"@method\" \"@authority\" \"@path\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+          ],
+          [
+            "signature",
+            "sig1=:DpL7f8azlY9w3xt6UswYnznKbyRXzsSdakItjzGHtY6P99nr8u28F4HtVossKNxUl0Df7AqaWDlGgRxLEh3fBw==:"
+          ]
+        ],
+        "body_base64": ""
+      },
+      "policy_overrides": {},
+      "expected": {
+        "outcome": "unknown_operator"
+      }
+    },
+    {
+      "name": "ignored_parameterized_member",
+      "request": {
+        "method": "GET",
+        "url": "https://shop.example/items/42",
+        "headers": [
+          [
+            "host",
+            "shop.example"
+          ],
+          [
+            "signature-agent",
+            "sig1=\"https://agent.example\";x=1"
+          ],
+          [
+            "signature-input",
+            "sig1=(\"@authority\" \"signature-agent\";key=\"sig1\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+          ],
+          [
+            "signature",
+            "sig1=:PbW0FAzfowsLncuNGGvcoK9zyJmRbaIdGEeV9fjJ8RfaxEGiAeMLsDJ2Li919e6FJDT5UeqTE1yhDCws2CMjAA==:"
+          ]
+        ],
+        "body_base64": ""
+      },
+      "policy_overrides": {},
+      "expected": {
+        "outcome": "unknown_operator"
+      }
+    },
+    {
+      "name": "ignored_member_key_not_label",
+      "request": {
+        "method": "GET",
+        "url": "https://shop.example/items/42",
+        "headers": [
+          [
+            "host",
+            "shop.example"
+          ],
+          [
+            "signature-agent",
+            "agent2=\"https://agent.example\""
+          ],
+          [
+            "signature-input",
+            "sig2=(\"@authority\" \"signature-agent\";key=\"agent2\");created=1799999999;expires=1800000059;keyid=\"CaJn8r1wQ6jaeqa0H9w0Xw4n2xguAKi6vziTdPQqqFs\";alg=\"ed25519\";nonce=\"bm9uY2Utbm9uY2Utbm9uY2Utbm9uY2U=\";tag=\"web-bot-auth\""
+          ],
+          [
+            "signature",
+            "sig2=:wmpdl4OOPrEPf/VjAQGnTIsShXeQGdY+emxICv0/c5POPPb4ulJAbNcum5rq7ratLz89z8VLtuq/J8IYDltiBg==:"
+          ]
+        ],
+        "body_base64": ""
+      },
+      "policy_overrides": {},
+      "expected": {
+        "outcome": "unknown_operator"
+      }
+    },
+    {
       "name": "invalid_require_binding",
       "request": {
         "method": "GET",
@@ -628,7 +830,9 @@
       "expected": {
         "outcome": "verified",
         "binds_request": true,
-        "replay_protected": true
+        "replay_protected": true,
+        "operator": "https://agent.example/",
+        "claimed_agent": "https://agent.example/"
       },
       "sequence": "replay"
     },
@@ -662,6 +866,188 @@
         "outcome": "replay"
       },
       "sequence": "replay"
+    }
+  ],
+  "normalization": [
+    {
+      "input": "HTTPS://Agent.EXAMPLE/K",
+      "identifier": "https://agent.example/K"
+    },
+    {
+      "input": "https://agent.example:443",
+      "identifier": "https://agent.example/"
+    },
+    {
+      "input": "https://a.example:/",
+      "identifier": "https://a.example/"
+    },
+    {
+      "input": "https://a.example:8443/x",
+      "identifier": "https://a.example:8443/x"
+    },
+    {
+      "input": "https://Agent.Example:443/a/./b/../%7euser/k%2fs.json?v=3",
+      "identifier": "https://agent.example/a/~user/k%2Fs.json"
+    },
+    {
+      "input": "https://a.example/a/..",
+      "identifier": "https://a.example/"
+    },
+    {
+      "input": "https://a.example/a/.",
+      "identifier": "https://a.example/a/"
+    },
+    {
+      "input": "https://a.example/%2E%2E/x",
+      "identifier": "https://a.example/x"
+    },
+    {
+      "input": "https://%61.example/",
+      "identifier": "https://a.example/"
+    },
+    {
+      "input": "https://[2001:DB8::1]/",
+      "identifier": "https://[2001:db8::1]/"
+    },
+    {
+      "input": "https://agent.example.",
+      "identifier": "https://agent.example./"
+    },
+    {
+      "input": "https://a.example?x=1",
+      "identifier": "https://a.example/"
+    },
+    {
+      "input": "https://a.example:65535/",
+      "identifier": "https://a.example:65535/"
+    },
+    {
+      "input": "https://a.example/kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+      "identifier": "https://a.example/kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+    },
+    {
+      "input": "",
+      "identifier": null
+    },
+    {
+      "input": "agent.example",
+      "identifier": null
+    },
+    {
+      "input": "http://a.example",
+      "identifier": null
+    },
+    {
+      "input": "data:x",
+      "identifier": null
+    },
+    {
+      "input": "https:///k",
+      "identifier": null
+    },
+    {
+      "input": "https://u@a.example/",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/#f",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example#",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example:x/",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example:0/",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example:0443/",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example:65536/",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example:+443/",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/%zz",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/%4",
+      "identifier": null
+    },
+    {
+      "input": "https://\u00e4.example/",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/a b",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/a\tb",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/a\u007fb",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/a\\b",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/a\"b",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/a{b",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/a|b",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/a^b",
+      "identifier": null
+    },
+    {
+      "input": "https://[v1.x]/",
+      "identifier": null
+    },
+    {
+      "input": "https://[fe80::1%25eth0]/",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/[",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/k?[",
+      "identifier": null
+    },
+    {
+      "input": "https://a.ex%2Fample/",
+      "identifier": null
+    },
+    {
+      "input": "https://a!.example/",
+      "identifier": null
+    },
+    {
+      "input": "https://a.example/kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+      "identifier": null
     }
   ]
 }

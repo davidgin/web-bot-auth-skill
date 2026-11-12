@@ -1562,6 +1562,100 @@ class Vectors(unittest.TestCase):
         import generate_vectors
         self.assertIn("allow_test_keys", generate_vectors.build()["description"])
 
+    # Written by hand, not derived from build() or the verifier (FR-017): name ->
+    # (outcome, operator, claimed_agent). claimed_agent is set once the request reaches the
+    # identity step, so signatures rejected for their parameters or times have none.
+    EXPECTED = {
+        "verified_bound": ("verified", AGENT_ID, AGENT_ID),
+        "verified_post_body": ("verified", AGENT_ID, AGENT_ID),
+        "verified_custom_label": ("verified", AGENT_ID, AGENT_ID),
+        "verified_minimal_coverage_unbound": ("verified", AGENT_ID, AGENT_ID),
+        "verified_without_nonce": ("verified", AGENT_ID, AGENT_ID),
+        "verified_target_uri_only": ("verified", AGENT_ID, AGENT_ID),
+        "verified_legacy_string_agent": ("verified", AGENT_ID, AGENT_ID),
+        "verified_query_ignored_in_identifier": ("verified", AGENT_ID, AGENT_ID),
+        "unsigned": ("unsigned", None, None),
+        "invalid_tampered_body": ("invalid", None, AGENT_ID),
+        "invalid_method_swap": ("invalid", None, AGENT_ID),
+        "invalid_path_swap": ("invalid", None, AGENT_ID),
+        "invalid_wrong_key": ("invalid", None, AGENT_ID),
+        "invalid_bad_alg": ("invalid", None, None),
+        "invalid_created_in_future": ("invalid", None, None),
+        "invalid_lifetime_too_long": ("invalid", None, None),
+        "invalid_short_nonce": ("invalid", None, AGENT_ID),
+        "expired": ("expired", None, None),
+        "expired_created_too_old": ("expired", None, None),
+        "unknown_operator": ("unknown_operator", None, "https://stranger.example/"),
+        "unknown_operator_path_mismatch": ("unknown_operator", None, "https://agent.example/other/path"),
+        "ignored_parameterized_member": ("unknown_operator", None, None),
+        "ignored_member_key_not_label": ("unknown_operator", None, None),
+        "invalid_require_binding": ("invalid", None, AGENT_ID),
+        "invalid_require_nonce": ("invalid", None, AGENT_ID),
+        "replay_first": ("verified", AGENT_ID, AGENT_ID),
+        "replay_second": ("replay", None, AGENT_ID),
+    }
+
+    @staticmethod
+    def load():
+        import json, os
+        path = os.path.join(os.path.dirname(__file__), "..", "assets", "test-vectors.json")
+        with open(path) as f:
+            return json.load(f)
+
+    def test_every_vector_has_an_expected_entry(self):
+        names = [v["name"] for v in self.load()["vectors"]]
+        self.assertEqual(sorted(names), sorted(self.EXPECTED))
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_vectors_match_hand_written_expectations(self):
+        data = self.load()
+        stores = {}
+        for v in data["vectors"]:
+            with self.subTest(vector=v["name"]):
+                store = stores.setdefault(v.get("sequence", v["name"]),
+                                          InMemoryNonceStore(clock=lambda: data["now"]))
+                verifier = Verifier(StaticKeyResolver(data["trusted_keys"], allow_test_keys=True), store,
+                                    Policy(**v["policy_overrides"]), clock=lambda: data["now"])
+                rq = v["request"]
+                r = verifier.verify(Request(rq["method"], rq["url"], [tuple(h) for h in rq["headers"]],
+                                            base64.b64decode(rq["body_base64"])))
+                outcome, operator, claimed = self.EXPECTED[v["name"]]
+                self.assertEqual((r.outcome.value, r.operator, r.claimed_agent), (outcome, operator, claimed), r.reason)
+                exp = v["expected"]
+                self.assertEqual(exp["outcome"], outcome)
+                if outcome in ("verified", "signed_untrusted"):  # given for accepted outcomes only
+                    self.assertEqual((exp["operator"], exp["claimed_agent"]), (operator, claimed))
+                else:
+                    self.assertNotIn("operator", exp)
+                    self.assertNotIn("claimed_agent", exp)
+
+    def test_exactly_one_vector_uses_the_legacy_string_agent(self):
+        legacy = [v["name"] for v in self.load()["vectors"]
+                  if any(k == "signature-agent" and val.startswith('"') for k, val in v["request"]["headers"])]
+        self.assertEqual(legacy, ["verified_legacy_string_agent"])
+
+    def test_ignored_member_vectors_carry_the_documented_shapes(self):
+        by_name = {v["name"]: dict(map(tuple, v["request"]["headers"])) for v in self.load()["vectors"]}
+        self.assertEqual(by_name["ignored_parameterized_member"]["signature-agent"], f'sig1="{AGENT}";x=1')
+        self.assertTrue(by_name["ignored_member_key_not_label"]["signature-input"].startswith("sig2="))
+        self.assertTrue(by_name["ignored_member_key_not_label"]["signature-agent"].startswith("agent2="))
+
+    def test_normalization_section_is_the_identity_contract(self):
+        section = self.load()["normalization"]
+        self.assertEqual([(c["input"], c["identifier"]) for c in section], list(NORMALIZATION_CASES))
+        for c in section:
+            with self.subTest(input=c["input"][:60]):
+                if c["identifier"] is None:
+                    with self.assertRaises(ValueError):
+                        normalize_agent_url(c["input"])
+                else:
+                    self.assertEqual(normalize_agent_url(c["input"]), c["identifier"])
+
+    def test_description_states_the_identity_contract(self):
+        d = self.load()["description"]
+        for needle in ("normalized URL", "allow_test_keys=True", "normalization"):
+            self.assertIn(needle, d)
+
 def hand_signed(key, agent_header, components, label="sig1", url="https://shop.example/items/42",
                 created=NOW - 1):
     """Sign headers and components exactly as given, through the private _sign (FR-013)."""
