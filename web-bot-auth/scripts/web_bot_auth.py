@@ -493,6 +493,10 @@ class _DirKey:
 def parse_directory(data: Union[bytes, str, Mapping]) -> dict:
     """Parse a JWKS key directory into {thumbprint: _DirKey}, skipping non-Ed25519 keys."""
     doc = json.loads(data) if isinstance(data, (bytes, str)) else data
+    # A 200 that is not a JWKS is not evidence about the keys (-01 section 6.10);
+    # raising lets the caller keep its last good copy instead of caching {}.
+    if not isinstance(doc, Mapping) or not isinstance(doc.get("keys"), list):
+        raise ValueError("not a JWKS: expected an object with a keys array")
     out = {}
     for jwk in doc.get("keys", []):
         if not isinstance(jwk, Mapping) or jwk.get("kty") != "OKP" or jwk.get("crv") != "Ed25519":

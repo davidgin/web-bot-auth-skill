@@ -14,7 +14,7 @@ from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 from web_bot_auth import (
     DirectoryKeyResolver, InMemoryNonceStore, content_digest_matches, NonceStoreError, Outcome, Policy,
-    Request, StaticKeyResolver, Verifier, jwk_thumbprint, parse_dictionary,
+    Request, StaticKeyResolver, Verifier, jwk_thumbprint, parse_dictionary, parse_directory,
     public_jwk, sign_request, signature_base, WELL_KNOWN_DIRECTORY,
 )
 
@@ -541,6 +541,56 @@ class DirectoryRefetch(Fixture):
             self.assertIsNone(res.resolve(f"unknown-{i}", AGENT, NOW + 61))
         self.assertTrue(res.resolve(kid, AGENT, NOW + 301).trusted)
         self.assertEqual(calls, [AGENT + WELL_KNOWN_DIRECTORY] * 3)
+
+    # -01 section 6.10: only a 200 that is a JWKS is evidence about the keys.
+    NON_JWKS = (b'{}', b'{"keys": {}}', b'{"error": "x"}', b'[]', b'"x"', b'null',
+                b'{"keys": null}', b'{"keys": "x"}')
+
+    def _warm_then_refresh_with(self, refreshed):
+        calls = []
+
+        def fetch(url):
+            calls.append(url)
+            if len(calls) == 1:
+                return json.dumps(self.jwks).encode(), 300
+            if isinstance(refreshed, Exception):
+                raise refreshed
+            return refreshed, 300
+
+        res = DirectoryKeyResolver([AGENT], fetch=fetch)
+        kid = jwk_thumbprint(public_jwk(self.key))
+        self.assertTrue(res.resolve(kid, AGENT, NOW).trusted)
+        return res, kid, calls
+
+    def test_non_jwks_refresh_keeps_cached_keys(self):
+        for body in self.NON_JWKS:
+            with self.subTest(body=body):
+                res, kid, calls = self._warm_then_refresh_with(body)
+                found = res.resolve(kid, AGENT, NOW + 301)
+                self.assertEqual(len(calls), 2)  # the refresh really happened
+                self.assertIsNotNone(found)
+                self.assertTrue(found.trusted)
+
+    def test_fetch_error_while_warm_keeps_cached_keys(self):
+        res, kid, calls = self._warm_then_refresh_with(TimeoutError("offline"))
+        self.assertTrue(res.resolve(kid, AGENT, NOW + 301).trusted)
+        self.assertEqual(len(calls), 2)
+
+    def test_valid_directory_without_key_evicts(self):
+        res, kid, calls = self._warm_then_refresh_with(b'{"keys": []}')
+        self.assertIsNone(res.resolve(kid, AGENT, NOW + 301))
+        self.assertEqual(len(calls), 2)
+
+    def test_parse_directory_rejects_non_jwks(self):
+        for body in self.NON_JWKS + (b"not json",):
+            with self.subTest(body=body):
+                with self.assertRaises(ValueError):
+                    parse_directory(body)
+        self.assertEqual(parse_directory(b'{"keys": []}'), {})
+
+    def test_static_resolver_rejects_non_jwks(self):
+        with self.assertRaises(ValueError):
+            StaticKeyResolver({AGENT: {}})
 
 
 class DirectoryUnavailable(Fixture):
