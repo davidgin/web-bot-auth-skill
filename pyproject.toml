@@ -3,7 +3,7 @@
 # web_bot_auth.py stays a single file that needs just `cryptography`.
 [project]
 name = "web-bot-auth-skill"
-version = "0.2.0"
+version = "0.2.1"
 description = "Development environment for the web-bot-auth Agent Skill"
 requires-python = ">=3.9"
 dependencies = ["cryptography"]
